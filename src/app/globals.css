@@ -1,26 +1,79 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  /* Colores */
+  --color-primary: #28685c;
+  --color-primary-hover: #1c5147;
+  --color-text: #243b36;
+  --color-text-muted: #65736e;
+  --color-background: #f6f7f3;
+  --color-surface: #ffffff;
+  --color-surface-soft: #eaf2ec;
+  --color-border: #dfe6df;
+  --color-disabled: #edf0ec;
+  --color-success: #2e7355;
+  --color-warning: #8b651e;
+  --color-warning-soft: #fcf4e3;
+  --color-danger: #b34843;
+  --color-danger-soft: #fbedec;
+
+  /* Tipografía */
+  --text-14: 14px;
+  --text-16: 16px;
+  --text-20: 20px;
+  --text-24: 24px;
+  --text-32: 32px;
+
+  /* Radios */
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+
+  /* Espaciado */
+  --spacing-ds-1: 4px;
+  --spacing-ds-2: 8px;
+  --spacing-ds-3: 12px;
+  --spacing-ds-4: 16px;
+  --spacing-ds-5: 20px;
+  --spacing-ds-6: 24px;
+  --spacing-ds-7: 32px;
+  --spacing-ds-8: 40px;
+
+  /* Dimensiones */
+  --height-control: 56px;
+  --size-calendar-cell: 72px;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+@utility h-control {
+  height: var(--height-control);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@utility size-calendar-cell {
+  width: var(--size-calendar-cell);
+  height: var(--size-calendar-cell);
+}
+
+@layer base {
+  body {
+    background-color: var(--color-background);
+    color: var(--color-text);
+    font-family: var(--font-lato), system-ui, sans-serif;
+    font-size: var(--text-16);
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
   }
-}
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: 700;
+    line-height: 1.4;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
 }
