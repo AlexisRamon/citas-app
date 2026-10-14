@@ -6,61 +6,60 @@ import { BottomSheet } from "@/components/ui/BottomSheet";
 import { Button } from "@/components/ui/Button";
 import { OTPInput } from "@/components/ui/OTPInput";
 import { isValidIsoDate, isValidTime } from "@/lib/format-date";
+import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
 import { HorarioClient } from "../../horario/HorarioClient";
 
-const CODE_LENGTH = 6;
+const CODE_LENGTH = 8;
 const RESEND_SECONDS = 24;
-const MOCK_CODE = "123456";
+const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
 
-function formatPhone(digits: string) {
-  return digits.replace(/^(\d{3})(\d{3})(\d{4})$/, "$1 $2 $3");
-}
-
-type OtpCodeClientProps = {
+type OtpCodeEmailClientProps = {
   tenant: Tenant;
 };
 
-export function OtpCodeClient({ tenant }: OtpCodeClientProps) {
+export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const supabase = createClient();
 
   const dateParam = searchParams.get("date");
   const timeParam = searchParams.get("time");
-  const phoneParam = searchParams.get("phone");
-  const channel = searchParams.get("channel") === "sms" ? "SMS" : "WhatsApp";
+  const emailParam = searchParams.get("email");
 
   const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
   const time = timeParam && isValidTime(timeParam) ? timeParam : null;
-  const phone = phoneParam && /^\d{10}$/.test(phoneParam) ? phoneParam : null;
+  const email = emailParam && EMAIL_REGEX.test(emailParam) ? emailParam : null;
 
   const [open, setOpen] = useState(true);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [secondsLeft, setSecondsLeft] = useState(RESEND_SECONDS);
+  const [verifying, setVerifying] = useState(false);
+  const [resending, setResending] = useState(false);
 
-  const canResend = secondsLeft === 0;
+  const canResend = secondsLeft === 0 && !resending;
 
   useEffect(() => {
     if (!date || !time) {
       router.replace(`/${tenant.slug}/agendar`);
       return;
     }
-    if (!phone) {
+    if (!email) {
       const params = new URLSearchParams({ date, time });
       router.replace(`/${tenant.slug}/agendar/otp?${params.toString()}`);
     }
-  }, [date, time, phone, router, tenant.slug]);
+  }, [date, time, email, router, tenant.slug]);
 
   useEffect(() => {
-    if (canResend) return;
+    if (secondsLeft === 0) return;
 
     const interval = setInterval(() => {
       setSecondsLeft((current) => Math.max(current - 1, 0));
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [canResend]);
+  }, [secondsLeft]);
 
   const handleClose = useCallback(() => {
     setOpen(false);
@@ -72,29 +71,88 @@ export function OtpCodeClient({ tenant }: OtpCodeClientProps) {
     if (error) setError(undefined);
   }
 
-  function handleVerify() {
-    if (!date || !time) return;
+  async function handleVerify() {
+    if (!date || !time || !email || verifying) return;
 
     if (code.length < CODE_LENGTH) {
-      setError("Ingresa los 6 dígitos");
+      setError("Ingresa los 8 dígitos");
       return;
     }
 
-    if (code === MOCK_CODE) {
-      const params = new URLSearchParams({ date, time });
-      router.push(`/${tenant.slug}/agendar/confirmar?${params.toString()}`);
-      return;
-    }
-
-    setError("Código incorrecto. Inténtalo de nuevo.");
-  }
-
-  function handleResend() {
-    setSecondsLeft(RESEND_SECONDS);
+    setVerifying(true);
     setError(undefined);
+
+    const { data, error: verifyError } = await supabase.auth.verifyOtp({
+      email,
+      token: code,
+      type: "email",
+    });
+
+    if (verifyError || !data.user) {
+      setError("Código incorrecto. Inténtalo de nuevo.");
+      setVerifying(false);
+      return;
+    }
+
+    const startsAt = new Date(`${date}T${time}:00`);
+
+    const { error: updateError, count } = await supabase
+      .from("appointments")
+      .update(
+        {
+          patient_id: data.user.id,
+          status: "confirmed",
+          hold_expires_at: null,
+        },
+        { count: "exact" },
+      )
+      .eq("tenant_id", tenant.id)
+      .eq("starts_at", startsAt.toISOString())
+      .eq("patient_email", email)
+      .eq("status", "pending");
+
+    if (updateError) {
+      setError("No pudimos confirmar tu cita. Inténtalo de nuevo.");
+      setVerifying(false);
+      return;
+    }
+
+    if (!count) {
+      setError(
+        "Tu reserva expiró o el horario ya no está disponible. Elige otro horario.",
+      );
+      setVerifying(false);
+      return;
+    }
+
+    setVerifying(false);
+    const params = new URLSearchParams({ date, time });
+    router.push(`/${tenant.slug}/agendar/confirmar?${params.toString()}`);
   }
 
-  if (!date || !time || !phone) return null;
+  async function handleResend() {
+    if (!email || !canResend) return;
+
+    setResending(true);
+    setError(undefined);
+
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true },
+    });
+
+    setResending(false);
+
+    if (otpError) {
+      setError("No pudimos reenviar el código. Inténtalo de nuevo.");
+      return;
+    }
+
+    setCode("");
+    setSecondsLeft(RESEND_SECONDS);
+  }
+
+  if (!date || !time || !email) return null;
 
   return (
     <>
@@ -106,7 +164,7 @@ export function OtpCodeClient({ tenant }: OtpCodeClientProps) {
         open={open}
         onClose={handleClose}
         title="Ingresa el código de verificación"
-        description={`Enviamos 6 dígitos por ${channel} al +52 ${formatPhone(phone)}.`}
+        description={`Enviamos 8 dígitos a ${email}.`}
       >
         <div className="flex flex-col gap-ds-6">
           <OTPInput
@@ -117,8 +175,12 @@ export function OtpCodeClient({ tenant }: OtpCodeClientProps) {
           />
 
           <div className="flex flex-col gap-ds-4">
-            <Button variant="primary" onClick={handleVerify} className="w-full">
-              Verificar
+            <Button
+              variant={verifying ? "disabled" : "primary"}
+              onClick={handleVerify}
+              className="w-full"
+            >
+              {verifying ? "Verificando…" : "Verificar"}
             </Button>
 
             <div
@@ -126,13 +188,14 @@ export function OtpCodeClient({ tenant }: OtpCodeClientProps) {
               aria-live="polite"
               className="flex min-h-[44px] items-center justify-center text-14"
             >
-              {canResend ? (
+              {secondsLeft === 0 ? (
                 <button
                   type="button"
                   onClick={handleResend}
+                  disabled={resending}
                   className="min-h-[44px] text-primary underline"
                 >
-                  Reenviar código
+                  {resending ? "Reenviando…" : "Reenviar código"}
                 </button>
               ) : (
                 <p className="text-text-muted">

@@ -12,20 +12,21 @@ import {
   Sun,
   Sunset,
 } from "lucide-react";
+import { Alert } from "@/components/ui/Alert";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { Button } from "@/components/ui/Button";
 import {
   formatLongDate,
   formatTimeLabel,
   isValidIsoDate,
+  isValidTime,
 } from "@/lib/format-date";
-import {
-  AFTERNOON_SLOTS,
-  MORNING_SLOTS,
-  getBusySlots,
-  isKnownSlot,
-} from "@/lib/slots-mock";
+import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
+
+const MORNING_SLOTS = ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"];
+const AFTERNOON_SLOTS = ["16:00", "16:30"];
+const ALL_SLOTS = [...MORNING_SLOTS, ...AFTERNOON_SLOTS];
 
 export function HorarioSkeleton({ slug }: { slug: string }) {
   return (
@@ -74,18 +75,83 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
   const timeParam = searchParams.get("time");
   const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
 
-  const [selectedSlot, setSelectedSlot] = useState<string | null>(() => {
-    if (!date || !timeParam || !isKnownSlot(timeParam)) return null;
-    return getBusySlots(date).has(timeParam) ? null : timeParam;
-  });
+  const [selectedSlot, setSelectedSlot] = useState<string | null>(() =>
+    timeParam && isValidTime(timeParam) ? timeParam : null,
+  );
+  const [busySlots, setBusySlots] = useState<Set<string>>(new Set());
+  const [loadingSlots, setLoadingSlots] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!date) router.replace(`/${tenant.slug}/agendar`);
   }, [date, router, tenant.slug]);
 
-  if (!date) return <HorarioSkeleton slug={tenant.slug} />;
+  useEffect(() => {
+    if (!date) return;
 
-  const busySlots = getBusySlots(date);
+    let cancelled = false;
+
+    async function loadBusySlots(isoDate: string) {
+      try {
+        const supabase = createClient();
+        const dayStart = new Date(`${isoDate}T00:00:00`);
+        const dayEnd = new Date(`${isoDate}T23:59:59`);
+
+        const { data, error } = await supabase
+          .from("public_busy_slots")
+          .select("starts_at")
+          .eq("tenant_id", tenant.id)
+          .gte("starts_at", dayStart.toISOString())
+          .lte("starts_at", dayEnd.toISOString());
+
+        if (cancelled) return;
+
+        if (error || !data) {
+          setLoadError(true);
+          setLoadingSlots(false);
+          return;
+        }
+
+        const busy = new Set<string>();
+        for (const row of data as { starts_at: string }[]) {
+          const d = new Date(row.starts_at);
+          const hh = String(d.getHours()).padStart(2, "0");
+          const mm = String(d.getMinutes()).padStart(2, "0");
+          busy.add(`${hh}:${mm}`);
+        }
+
+        setBusySlots(busy);
+        setLoadError(false);
+        setLoadingSlots(false);
+      } catch {
+        if (cancelled) return;
+        setLoadError(true);
+        setLoadingSlots(false);
+      }
+    }
+
+    loadBusySlots(date);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [date, tenant.id, reloadKey]);
+
+  function handleRetry() {
+    setLoadError(false);
+    setLoadingSlots(true);
+    setReloadKey((current) => current + 1);
+  }
+
+  if (!date || loadingSlots) return <HorarioSkeleton slug={tenant.slug} />;
+
+  const activeSlot =
+    selectedSlot &&
+    ALL_SLOTS.includes(selectedSlot) &&
+    !busySlots.has(selectedSlot)
+      ? selectedSlot
+      : null;
 
   function renderSlot(time: string) {
     const label = formatTimeLabel(time);
@@ -105,7 +171,7 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
       );
     }
 
-    const isSelected = selectedSlot === time;
+    const isSelected = activeSlot === time;
 
     return (
       <li key={time}>
@@ -130,10 +196,10 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
     );
   }
 
-  const continueHref = selectedSlot
+  const continueHref = activeSlot
     ? `/${tenant.slug}/agendar/otp?${new URLSearchParams({
         date,
-        time: selectedSlot,
+        time: activeSlot,
       }).toString()}`
     : undefined;
 
@@ -174,29 +240,47 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
           </div>
         </section>
 
-        <SlotGroup
-          id="franja-manana"
-          label="Mañana"
-          icon={<Sun size={16} aria-hidden="true" />}
-        >
-          {MORNING_SLOTS.map(renderSlot)}
-        </SlotGroup>
+        {loadError ? (
+          <div className="flex flex-col gap-ds-4">
+            <Alert
+              variant="danger"
+              title="No pudimos cargar los horarios"
+              description="Revisa tu conexión e inténtalo de nuevo."
+            />
+            <Button
+              variant="secondary"
+              onClick={handleRetry}
+              className="w-full"
+            >
+              Reintentar
+            </Button>
+          </div>
+        ) : (
+          <>
+            <SlotGroup
+              id="franja-manana"
+              label="Mañana"
+              icon={<Sun size={16} aria-hidden="true" />}
+            >
+              {MORNING_SLOTS.map(renderSlot)}
+            </SlotGroup>
 
-        <SlotGroup
-          id="franja-tarde"
-          label="Tarde"
-          icon={<Sunset size={16} aria-hidden="true" />}
-        >
-          {AFTERNOON_SLOTS.map(renderSlot)}
-        </SlotGroup>
+            <SlotGroup
+              id="franja-tarde"
+              label="Tarde"
+              icon={<Sunset size={16} aria-hidden="true" />}
+            >
+              {AFTERNOON_SLOTS.map(renderSlot)}
+            </SlotGroup>
+          </>
+        )}
 
         <div className="mt-auto flex flex-col gap-ds-3">
           <p className="text-center text-14 text-text-muted">
-            Toca un horario para continuar. Verificarás tu teléfono al
-            confirmar.
+            Toca un horario para continuar. Verificarás tu correo al confirmar.
           </p>
           <Button
-            variant={selectedSlot ? "primary" : "disabled"}
+            variant={activeSlot ? "primary" : "disabled"}
             href={continueHref}
             icon={<ArrowRight size={20} aria-hidden="true" />}
             className="w-full"

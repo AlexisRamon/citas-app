@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { getTenantBySlug } from "@/lib/tenant";
-import { OtpCodeClient } from "./OtpCodeClient";
+import { OtpCodeEmailClient } from "./OtpCodeEmailClient";
 
 type PageProps = {
   params: Promise<{ tenant: string }>;
@@ -14,7 +14,7 @@ export default async function OtpCodePage({ params }: PageProps) {
 
   return (
     <Suspense fallback={null}>
-      <OtpCodeClient tenant={tenant} />
+      <OtpCodeEmailClient tenant={tenant} />
     </Suspense>
   );
 }
