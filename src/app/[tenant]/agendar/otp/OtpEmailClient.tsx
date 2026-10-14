@@ -35,7 +35,9 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
   const time = timeParam && isValidTime(timeParam) ? timeParam : null;
 
   const [open, setOpen] = useState(true);
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const [sending, setSending] = useState(false);
 
@@ -48,6 +50,11 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
     router.back();
   }, [router]);
 
+  function handleNameChange(value: string) {
+    setName(value);
+    if (nameError) setNameError(undefined);
+  }
+
   function handleEmailChange(value: string) {
     setEmail(value);
     if (error) setError(undefined);
@@ -56,15 +63,19 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
   async function handleSend() {
     if (!date || !time || sending) return;
 
+    const normalizedName = name.trim();
     const normalizedEmail = email.trim().toLowerCase();
 
-    if (!normalizedEmail || !EMAIL_REGEX.test(normalizedEmail)) {
-      setError("Ingresa un correo válido");
-      return;
-    }
+    const nameInvalid = normalizedName.length < 2;
+    const emailInvalid =
+      !normalizedEmail || !EMAIL_REGEX.test(normalizedEmail);
+
+    setNameError(nameInvalid ? "Ingresa tu nombre" : undefined);
+    setError(emailInvalid ? "Ingresa un correo válido" : undefined);
+
+    if (nameInvalid || emailInvalid) return;
 
     setSending(true);
-    setError(undefined);
 
     const { error: otpError } = await supabase.auth.signInWithOtp({
       email: normalizedEmail,
@@ -82,6 +93,7 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
 
     const { error: holdError } = await supabase.from("appointments").insert({
       tenant_id: tenant.id,
+      patient_name: normalizedName,
       patient_email: normalizedEmail,
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
@@ -100,7 +112,12 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
     }
 
     setSending(false);
-    const params = new URLSearchParams({ date, time, email: normalizedEmail });
+    const params = new URLSearchParams({
+      date,
+      time,
+      email: normalizedEmail,
+      name: normalizedName,
+    });
     router.push(`/${tenant.slug}/agendar/otp/codigo?${params.toString()}`);
   }
 
@@ -119,17 +136,30 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
         description={`${formatLongDate(date)} · ${formatTimeLabel(time)}`}
       >
         <div className="flex flex-col gap-ds-5">
-          <Input
-            type="email"
-            inputMode="email"
-            autoComplete="email"
-            label="Correo electrónico"
-            placeholder="tu@correo.com"
-            value={email}
-            onChange={handleEmailChange}
-            error={error}
-            hint="Te enviaremos un código de verificación."
-          />
+          <div className="flex flex-col gap-ds-4">
+            <Input
+              type="text"
+              autoComplete="name"
+              label="Nombre completo"
+              placeholder="Tu nombre y apellido"
+              value={name}
+              onChange={handleNameChange}
+              error={nameError}
+              required
+            />
+            <Input
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              label="Correo electrónico"
+              placeholder="tu@correo.com"
+              value={email}
+              onChange={handleEmailChange}
+              error={error}
+              hint="Te enviaremos un código de verificación."
+              required
+            />
+          </div>
 
           <Button
             variant={sending ? "disabled" : "primary"}

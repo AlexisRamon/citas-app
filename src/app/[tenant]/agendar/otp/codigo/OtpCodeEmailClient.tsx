@@ -26,10 +26,12 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   const dateParam = searchParams.get("date");
   const timeParam = searchParams.get("time");
   const emailParam = searchParams.get("email");
+  const nameParam = searchParams.get("name");
 
   const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
   const time = timeParam && isValidTime(timeParam) ? timeParam : null;
   const email = emailParam && EMAIL_REGEX.test(emailParam) ? emailParam : null;
+  const name = nameParam && nameParam.trim().length >= 2 ? nameParam.trim() : null;
 
   const [open, setOpen] = useState(true);
   const [code, setCode] = useState("");
@@ -38,18 +40,16 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
 
-  const canResend = secondsLeft === 0 && !resending;
-
   useEffect(() => {
     if (!date || !time) {
       router.replace(`/${tenant.slug}/agendar`);
       return;
     }
-    if (!email) {
+    if (!email || !name) {
       const params = new URLSearchParams({ date, time });
       router.replace(`/${tenant.slug}/agendar/otp?${params.toString()}`);
     }
-  }, [date, time, email, router, tenant.slug]);
+  }, [date, time, email, name, router, tenant.slug]);
 
   useEffect(() => {
     if (secondsLeft === 0) return;
@@ -72,7 +72,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   }
 
   async function handleVerify() {
-    if (!date || !time || !email || verifying) return;
+    if (!date || !time || !email || !name || verifying) return;
 
     if (code.length < CODE_LENGTH) {
       setError("Ingresa los 8 dígitos");
@@ -101,6 +101,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
       .update(
         {
           patient_id: data.user.id,
+          patient_name: name,
           status: "confirmed",
           hold_expires_at: null,
         },
@@ -131,7 +132,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   }
 
   async function handleResend() {
-    if (!email || !canResend) return;
+    if (!email || secondsLeft > 0 || resending) return;
 
     setResending(true);
     setError(undefined);
@@ -152,7 +153,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
     setSecondsLeft(RESEND_SECONDS);
   }
 
-  if (!date || !time || !email) return null;
+  if (!date || !time || !email || !name) return null;
 
   return (
     <>
