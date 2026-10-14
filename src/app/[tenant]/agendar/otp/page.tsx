@@ -1,118 +1,20 @@
-"use client";
+import { Suspense } from "react";
+import { notFound } from "next/navigation";
+import { getTenantBySlug } from "@/lib/tenant";
+import { OtpPhoneClient } from "./OtpPhoneClient";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { BottomSheet } from "@/components/ui/BottomSheet";
-import { Button } from "@/components/ui/Button";
-import { PhoneInput } from "@/components/ui/PhoneInput";
-import {
-  formatLongDate,
-  formatTimeLabel,
-  isValidIsoDate,
-  isValidTime,
-} from "@/lib/format-date";
-import { MOCK_TENANT } from "@/lib/tenant-mock";
-import HorarioPage from "../horario/page";
+type PageProps = {
+  params: Promise<{ tenant: string }>;
+};
 
-type Channel = "whatsapp" | "sms";
+export default async function OtpPhonePage({ params }: PageProps) {
+  const { tenant: slug } = await params;
+  const tenant = await getTenantBySlug(slug);
+  if (!tenant) notFound();
 
-function OtpPhoneContent() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
-  const dateParam = searchParams.get("date");
-  const timeParam = searchParams.get("time");
-  const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
-  const time = timeParam && isValidTime(timeParam) ? timeParam : null;
-
-  const [open, setOpen] = useState(true);
-  const [phone, setPhone] = useState("");
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    if (!date || !time) router.replace(`/${MOCK_TENANT.slug}/agendar`);
-  }, [date, time, router]);
-
-  const handleClose = useCallback(() => {
-    setOpen(false);
-    router.back();
-  }, [router]);
-
-  function handlePhoneChange(value: string) {
-    setPhone(value);
-    if (error) setError(undefined);
-  }
-
-  function handleSend(channel: Channel) {
-    if (!date || !time) return;
-
-    if (phone.length < 10) {
-      setError("Ingresa un número válido");
-      return;
-    }
-
-    const params = new URLSearchParams({ date, time, phone, channel });
-    router.push(`/${MOCK_TENANT.slug}/agendar/otp/codigo?${params.toString()}`);
-  }
-
-  if (!date || !time) return null;
-
-  return (
-    <>
-      <HorarioPage />
-
-      <BottomSheet
-        open={open}
-        onClose={handleClose}
-        title="Verifica tu número para confirmar"
-        description={`${formatLongDate(date)} · ${formatTimeLabel(time)}`}
-      >
-        <div className="flex flex-col gap-ds-5">
-          <div className="flex flex-col gap-ds-2">
-            <PhoneInput
-              value={phone}
-              onChange={handlePhoneChange}
-              error={error}
-              placeholder="311 123 4567"
-            />
-            {error ? null : (
-              <p className="text-14 text-text-muted">
-                Te enviaremos un código de verificación.
-              </p>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-ds-3">
-            <Button
-              variant="primary"
-              onClick={() => handleSend("whatsapp")}
-              className="w-full"
-            >
-              Enviar código por WhatsApp
-            </Button>
-            <button
-              type="button"
-              onClick={() => handleSend("sms")}
-              className="min-h-[44px] text-center text-14 text-primary underline"
-            >
-              Prefiero SMS
-            </button>
-          </div>
-
-          <p className="text-center text-14 text-text-muted">
-            Al continuar, aceptas el aviso de privacidad. Usaremos tu número solo
-            para verificar tu cita y enviarte recordatorios.
-          </p>
-        </div>
-      </BottomSheet>
-    </>
-  );
-}
-
-export default function OtpPhonePage() {
   return (
     <Suspense fallback={null}>
-      <OtpPhoneContent />
+      <OtpPhoneClient tenant={tenant} />
     </Suspense>
   );
 }
