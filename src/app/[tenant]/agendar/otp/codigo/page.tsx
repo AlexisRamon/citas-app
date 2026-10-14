@@ -1,25 +1,52 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { BottomSheet } from "@/components/ui/BottomSheet";
 import { Button } from "@/components/ui/Button";
 import { OTPInput } from "@/components/ui/OTPInput";
-import AgendarPage from "../../page";
+import { isValidIsoDate, isValidTime } from "@/lib/format-date";
+import { MOCK_TENANT } from "@/lib/tenant-mock";
+import HorarioPage from "../../horario/page";
 
 const CODE_LENGTH = 6;
 const RESEND_SECONDS = 24;
 const MOCK_CODE = "123456";
-const MOCK_PHONE = "+52 311 123 4567";
 
-export default function OtpCodePage() {
+function formatPhone(digits: string) {
+  return digits.replace(/^(\d{3})(\d{3})(\d{4})$/, "$1 $2 $3");
+}
+
+function OtpCodeContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const dateParam = searchParams.get("date");
+  const timeParam = searchParams.get("time");
+  const phoneParam = searchParams.get("phone");
+  const channel = searchParams.get("channel") === "sms" ? "SMS" : "WhatsApp";
+
+  const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
+  const time = timeParam && isValidTime(timeParam) ? timeParam : null;
+  const phone = phoneParam && /^\d{10}$/.test(phoneParam) ? phoneParam : null;
+
   const [open, setOpen] = useState(true);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [secondsLeft, setSecondsLeft] = useState(RESEND_SECONDS);
 
   const canResend = secondsLeft === 0;
+
+  useEffect(() => {
+    if (!date || !time) {
+      router.replace(`/${MOCK_TENANT.slug}/agendar`);
+      return;
+    }
+    if (!phone) {
+      const params = new URLSearchParams({ date, time });
+      router.replace(`/${MOCK_TENANT.slug}/agendar/otp?${params.toString()}`);
+    }
+  }, [date, time, phone, router]);
 
   useEffect(() => {
     if (canResend) return;
@@ -31,10 +58,10 @@ export default function OtpCodePage() {
     return () => clearInterval(interval);
   }, [canResend]);
 
-  function handleClose() {
+  const handleClose = useCallback(() => {
     setOpen(false);
     router.back();
-  }
+  }, [router]);
 
   function handleCodeChange(value: string) {
     setCode(value);
@@ -42,13 +69,16 @@ export default function OtpCodePage() {
   }
 
   function handleVerify() {
+    if (!date || !time) return;
+
     if (code.length < CODE_LENGTH) {
       setError("Ingresa los 6 dígitos");
       return;
     }
 
     if (code === MOCK_CODE) {
-      router.push("/dr-guzman/agendar/confirmar");
+      const params = new URLSearchParams({ date, time });
+      router.push(`/${MOCK_TENANT.slug}/agendar/confirmar?${params.toString()}`);
       return;
     }
 
@@ -56,20 +86,21 @@ export default function OtpCodePage() {
   }
 
   function handleResend() {
-    console.log("Reenviando OTP a:", MOCK_PHONE);
     setSecondsLeft(RESEND_SECONDS);
     setError(undefined);
   }
 
+  if (!date || !time || !phone) return null;
+
   return (
     <>
-      <AgendarPage />
+      <HorarioPage />
 
       <BottomSheet
         open={open}
         onClose={handleClose}
         title="Ingresa el código de verificación"
-        description={`Enviamos 6 dígitos por WhatsApp al ${MOCK_PHONE}.`}
+        description={`Enviamos 6 dígitos por ${channel} al +52 ${formatPhone(phone)}.`}
       >
         <div className="flex flex-col gap-ds-6">
           <OTPInput
@@ -107,5 +138,13 @@ export default function OtpCodePage() {
         </div>
       </BottomSheet>
     </>
+  );
+}
+
+export default function OtpCodePage() {
+  return (
+    <Suspense fallback={null}>
+      <OtpCodeContent />
+    </Suspense>
   );
 }

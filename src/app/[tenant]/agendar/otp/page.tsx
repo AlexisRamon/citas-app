@@ -1,24 +1,42 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { BottomSheet } from "@/components/ui/BottomSheet";
 import { Button } from "@/components/ui/Button";
 import { PhoneInput } from "@/components/ui/PhoneInput";
-import AgendarPage from "../page";
+import {
+  formatLongDate,
+  formatTimeLabel,
+  isValidIsoDate,
+  isValidTime,
+} from "@/lib/format-date";
+import { MOCK_TENANT } from "@/lib/tenant-mock";
+import HorarioPage from "../horario/page";
 
 type Channel = "whatsapp" | "sms";
 
-export default function OtpPhonePage() {
+function OtpPhoneContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const dateParam = searchParams.get("date");
+  const timeParam = searchParams.get("time");
+  const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
+  const time = timeParam && isValidTime(timeParam) ? timeParam : null;
+
   const [open, setOpen] = useState(true);
   const [phone, setPhone] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
 
-  function handleClose() {
+  useEffect(() => {
+    if (!date || !time) router.replace(`/${MOCK_TENANT.slug}/agendar`);
+  }, [date, time, router]);
+
+  const handleClose = useCallback(() => {
     setOpen(false);
     router.back();
-  }
+  }, [router]);
 
   function handlePhoneChange(value: string) {
     setPhone(value);
@@ -26,24 +44,28 @@ export default function OtpPhonePage() {
   }
 
   function handleSend(channel: Channel) {
+    if (!date || !time) return;
+
     if (phone.length < 10) {
       setError("Ingresa un número válido");
       return;
     }
 
-    console.log("Enviando OTP a:", phone, `(${channel})`);
-    router.push("/dr-guzman/agendar/otp/codigo");
+    const params = new URLSearchParams({ date, time, phone, channel });
+    router.push(`/${MOCK_TENANT.slug}/agendar/otp/codigo?${params.toString()}`);
   }
+
+  if (!date || !time) return null;
 
   return (
     <>
-      <AgendarPage />
+      <HorarioPage />
 
       <BottomSheet
         open={open}
         onClose={handleClose}
         title="Verifica tu número para confirmar"
-        description="Así evitamos citas falsas y te enviamos recordatorios"
+        description={`${formatLongDate(date)} · ${formatTimeLabel(time)}`}
       >
         <div className="flex flex-col gap-ds-5">
           <div className="flex flex-col gap-ds-2">
@@ -84,5 +106,13 @@ export default function OtpPhonePage() {
         </div>
       </BottomSheet>
     </>
+  );
+}
+
+export default function OtpPhonePage() {
+  return (
+    <Suspense fallback={null}>
+      <OtpPhoneContent />
+    </Suspense>
   );
 }

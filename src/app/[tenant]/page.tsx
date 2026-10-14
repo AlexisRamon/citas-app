@@ -1,21 +1,17 @@
-// src/app/[tenant]/page.tsx
 "use client";
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-
-const TENANT = {
-  slug: "dr-guzman",
-  name: "Dr. Guzmán",
-  initials: "DG",
-  specialty: "Medicina general",
-};
+import { MOCK_TENANT } from "@/lib/tenant-mock";
 
 export default function SplashPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const timer = setTimeout(() => router.push("/dr-guzman/home"), 1500);
+    const timer = setTimeout(
+      () => router.push(`/${MOCK_TENANT.slug}/home`),
+      1500,
+    );
     return () => clearTimeout(timer);
   }, [router]);
 
@@ -38,13 +34,13 @@ export default function SplashPage() {
           className="relative flex size-[112px] items-center justify-center rounded-lg bg-surface"
         >
           <span className="text-32 font-bold text-primary">
-            {TENANT.initials}
+            {MOCK_TENANT.initials}
           </span>
         </div>
 
         <div className="relative flex w-full flex-col gap-ds-2">
-          <h1 className="text-32 font-bold">{TENANT.name}</h1>
-          <p className="text-16">{TENANT.specialty}</p>
+          <h1 className="text-32 font-bold">{MOCK_TENANT.name}</h1>
+          <p className="text-16">{MOCK_TENANT.specialty}</p>
         </div>
       </div>
 

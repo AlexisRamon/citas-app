@@ -1,28 +1,39 @@
+"use client";
+
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { BadgeCheck, CalendarPlus } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { Button } from "@/components/ui/Button";
+import {
+  formatLongDate,
+  formatTimeLabel,
+  isValidIsoDate,
+  isValidTime,
+} from "@/lib/format-date";
+import { MOCK_TENANT } from "@/lib/tenant-mock";
 
-const TENANT = {
-  name: "Dr. Guzmán",
-  initials: "DG",
-  address: "Calle Hidalgo 120, Tepic",
-  phone: "311 123 4567",
-};
+function ConfirmarContent() {
+  const searchParams = useSearchParams();
 
-const APPOINTMENT = {
-  date: "Viernes 9 de octubre",
-  time: "4:00 PM",
-};
+  const dateParam = searchParams.get("date");
+  const timeParam = searchParams.get("time");
+  const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
+  const time = timeParam && isValidTime(timeParam) ? timeParam : null;
 
-const DETAILS = [
-  { label: "Doctor", value: TENANT.name },
-  { label: "Fecha y hora", value: `${APPOINTMENT.date}, ${APPOINTMENT.time}` },
-  { label: "Dirección", value: TENANT.address },
-  { label: "Teléfono", value: TENANT.phone },
-];
+  const dateTimeLabel =
+    date && time
+      ? `${formatLongDate(date)} · ${formatTimeLabel(time)}`
+      : "Fecha por confirmar";
 
-export default function ConfirmarPage() {
+  const details = [
+    { label: "Doctor", value: MOCK_TENANT.name },
+    { label: "Fecha y hora", value: dateTimeLabel },
+    { label: "Dirección", value: MOCK_TENANT.address },
+    { label: "Teléfono", value: MOCK_TENANT.phone },
+  ];
+
   return (
     <>
       <main className="flex min-h-dvh flex-col gap-ds-6 bg-background px-ds-6 pb-[calc(64px+var(--spacing-ds-6)+env(safe-area-inset-bottom))] pt-ds-3">
@@ -31,7 +42,9 @@ export default function ConfirmarPage() {
             aria-hidden="true"
             className="flex size-[48px] items-center justify-center rounded-md bg-surface-soft"
           >
-            <span className="text-20 font-bold text-primary">{TENANT.initials}</span>
+            <span className="text-20 font-bold text-primary">
+              {MOCK_TENANT.initials}
+            </span>
           </div>
           <Badge variant="verificado" />
         </header>
@@ -54,7 +67,7 @@ export default function ConfirmarPage() {
           className="rounded-md border border-border bg-surface p-ds-5"
         >
           <dl className="flex flex-col gap-ds-4">
-            {DETAILS.map(({ label, value }) => (
+            {details.map(({ label, value }) => (
               <div key={label}>
                 <dt className="text-16 text-text-muted">{label}</dt>
                 <dd className="text-16 font-bold text-text">{value}</dd>
@@ -66,7 +79,7 @@ export default function ConfirmarPage() {
         <section className="flex flex-col gap-ds-3">
           <Button
             variant="primary"
-            icon={<CalendarPlus size={20} />}
+            icon={<CalendarPlus size={20} aria-hidden="true" />}
             className="w-full"
           >
             Añadir a mi calendario
@@ -77,7 +90,15 @@ export default function ConfirmarPage() {
         </section>
       </main>
 
-      <BottomNav activeHref="/dr-guzman/home" />
+      <BottomNav activeHref={`/${MOCK_TENANT.slug}/home`} />
     </>
+  );
+}
+
+export default function ConfirmarPage() {
+  return (
+    <Suspense fallback={null}>
+      <ConfirmarContent />
+    </Suspense>
   );
 }

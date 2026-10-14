@@ -12,22 +12,12 @@ import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { Button } from "@/components/ui/Button";
+import { MOCK_TENANT } from "@/lib/tenant-mock";
 
-type HomeVariant = "abierto" | "proximo" | "cerrado";
+type HomeVariant = "abierto" | "proximo" | "cerrado" | "agenda-cerrada";
 
 // Para probar los estados, cambia esta línea:
 const variant: HomeVariant = "abierto";
-
-const TENANT = {
-  slug: "dr-guzman",
-  name: "Dr. Guzmán",
-  initials: "DG",
-  specialty: "Medicina general",
-  city: "Ciudad de México",
-  photo: "/tenants/dr-guzman/consultorio.svg",
-  officeName: "Consultorio Alameda",
-  addressLines: ["Av. Álvaro Obregón 128, Roma Norte", "Ciudad de México"],
-};
 
 const STATUS: Record<
   HomeVariant,
@@ -37,28 +27,40 @@ const STATUS: Record<
     lines: string[];
     signalClasses: string;
     titleClasses: string;
+    canBook: boolean;
   }
 > = {
   abierto: {
     icon: CircleCheck,
     title: "Abierto ahora",
-    lines: ["Lunes 12 de octubre", "Atención de 9:00 a. m. a 5:00 p. m."],
+    lines: ["Atención de 9:00 a. m. a 5:00 p. m."],
     signalClasses: "bg-surface-soft text-success",
     titleClasses: "text-success",
+    canBook: true,
   },
   proximo: {
     icon: Clock3,
-    title: "Próximo hueco 4PM",
-    lines: ["Lunes 12 de octubre · 4:00 p. m.", "Consulta presencial de 30 minutos."],
+    title: "Próximo hueco a las 4:00 p. m.",
+    lines: ["Consulta presencial de 30 minutos."],
     signalClasses: "bg-warning-soft text-warning",
     titleClasses: "text-warning",
+    canBook: true,
   },
   cerrado: {
     icon: LockKeyhole,
     title: "Cerrado hoy",
-    lines: ["Domingo 11 de octubre. Hoy no hay atención; puedes reservar para otro día."],
+    lines: ["Hoy no hay atención.", "Puedes reservar para otro día."],
     signalClasses: "bg-disabled text-text-muted",
     titleClasses: "text-text-muted",
+    canBook: true,
+  },
+  "agenda-cerrada": {
+    icon: LockKeyhole,
+    title: "Sin citas por ahora",
+    lines: ["Vuelve pronto o contacta al consultorio."],
+    signalClasses: "bg-disabled text-text-muted",
+    titleClasses: "text-text-muted",
+    canBook: false,
   },
 };
 
@@ -74,7 +76,9 @@ export default function TenantHomePage() {
             aria-hidden="true"
             className="flex size-[48px] items-center justify-center rounded-md bg-surface-soft"
           >
-            <span className="text-20 font-bold text-primary">{TENANT.initials}</span>
+            <span className="text-20 font-bold text-primary">
+              {MOCK_TENANT.initials}
+            </span>
           </div>
           <Badge variant="invitado" />
         </header>
@@ -83,17 +87,27 @@ export default function TenantHomePage() {
           <p className="text-14 font-bold uppercase text-primary">
             Tu consultorio, cerca de ti
           </p>
-          <h1 className="text-32 font-bold text-text">{TENANT.name}</h1>
+          <h1 className="text-32 font-bold text-text">{MOCK_TENANT.name}</h1>
           <p className="text-16 text-text-muted">
-            {TENANT.specialty} · {TENANT.city}
+            {MOCK_TENANT.specialty} · {MOCK_TENANT.city}
           </p>
         </section>
+
+        {status.canBook ? null : (
+          <div
+            role="status"
+            className="flex items-center gap-ds-3 rounded-md bg-disabled p-ds-4 text-text-muted"
+          >
+            <LockKeyhole size={20} aria-hidden="true" className="shrink-0" />
+            <p className="text-16 font-bold">Agenda cerrada por el doctor</p>
+          </div>
+        )}
 
         <section className="overflow-hidden rounded-lg border border-border bg-surface">
           <div className="relative h-[172px] w-full">
             <Image
-              src={TENANT.photo}
-              alt={`Consultorio de ${TENANT.name}`}
+              src={MOCK_TENANT.photo}
+              alt={`Consultorio de ${MOCK_TENANT.name}`}
               fill
               sizes="(max-width: 480px) 100vw, 480px"
               className="object-cover"
@@ -120,19 +134,29 @@ export default function TenantHomePage() {
         </section>
 
         <section className="flex flex-col gap-ds-3">
-          <Button
-            href="/dr-guzman/agendar"
-            variant="primary"
-            icon={<CalendarPlus size={20} />}
-            className="w-full"
-          >
-            Agendar cita
-          </Button>
+          {status.canBook ? (
+            <Button
+              href={`/${MOCK_TENANT.slug}/agendar`}
+              variant="primary"
+              icon={<CalendarPlus size={20} aria-hidden="true" />}
+              className="w-full"
+            >
+              Agendar cita
+            </Button>
+          ) : (
+            <Button
+              variant="disabled"
+              icon={<CalendarPlus size={20} aria-hidden="true" />}
+              className="w-full"
+            >
+              Agendar cita
+            </Button>
+          )}
 
           <Button
-            href="/dr-guzman/mi-cita"
+            href={`/${MOCK_TENANT.slug}/mi-cita`}
             variant="secondary"
-            icon={<Ticket size={20} />}
+            icon={<Ticket size={20} aria-hidden="true" />}
             className="w-full"
           >
             Ver mi cita
@@ -146,9 +170,11 @@ export default function TenantHomePage() {
           <div className="flex items-start gap-ds-3">
             <MapPin size={20} aria-hidden="true" className="shrink-0 text-primary" />
             <div className="flex flex-1 flex-col gap-ds-1">
-              <p className="text-16 font-bold text-text">{TENANT.officeName}</p>
+              <p className="text-16 font-bold text-text">
+                {MOCK_TENANT.officeName}
+              </p>
               <address className="text-14 not-italic text-text-muted">
-                {TENANT.addressLines.map((line) => (
+                {MOCK_TENANT.addressLines.map((line) => (
                   <p key={line}>{line}</p>
                 ))}
               </address>
@@ -172,7 +198,7 @@ export default function TenantHomePage() {
         </section>
       </main>
 
-      <BottomNav activeHref="/dr-guzman/home" />
+      <BottomNav activeHref={`/${MOCK_TENANT.slug}/home`} />
     </>
   );
 }
