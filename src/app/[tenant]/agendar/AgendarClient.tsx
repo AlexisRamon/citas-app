@@ -29,7 +29,7 @@ function addDays(date: Date, amount: number) {
 
 function isClosed(date: Date) {
   const weekday = date.getDay();
-  return weekday === 0 || weekday === 3;
+  return weekday === 0 || weekday === 2;
 }
 
 type AgendarClientProps = {
