@@ -122,6 +122,7 @@ export function HomeClient({ tenant }: HomeClientProps) {
               fill
               sizes="(max-width: 480px) 100vw, 480px"
               className="object-cover"
+              unoptimized
             />
           </div>
           <div className="flex flex-col gap-ds-3 p-ds-5">
