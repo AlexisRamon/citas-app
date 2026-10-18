@@ -29,24 +29,29 @@ Tokens dinámicos por tenant (se sobrescriben en runtime):
 
 El resto de tokens son estáticos. Ver `src/app/globals.css` para valores exactos.
 
-## Componentes (12 total)
-Button, Badge, Input, PhoneInput, OTPInput, Alert, AppointmentCard, CalendarCell, TenantIdentity, QRCard, BottomNav, PageHeader.
+## Componentes (`src/components/ui/`)
+Button, Badge, Input, PhoneInput (sin uso por ahora), OTPInput, Alert, AppointmentCard, CalendarCell, TenantIdentity, QRCard, BottomNav, PageHeader, BottomSheet, SidebarNav.
 
 Ver `src/app/design-system/page.tsx` para el catálogo visual.
 
 ## Rutas
-- `/[tenant]/*` → paciente (multi-tenant, branding dinámico por CSS vars)
-- `/doctor/*` → panel del doctor (protegido)
-- `/admin/*` → Super Admin (protegido)
+- `/` → landing mínima
+- `/[tenant]/*` → paciente (multi-tenant, branding dinámico por CSS vars desde `[tenant]/layout.tsx`)
+  - `/[tenant]` splash · `/home` · `/agendar` (fecha) · `/agendar/horario` · `/agendar/otp` · `/agendar/otp/codigo` · `/agendar/confirmar` · `/mi-cita`
+- `/doctor/login` → login del doctor (público)
+- `/doctor/*` → panel del doctor, grupo `(panel)` protegido por `src/proxy.ts`: `/doctor` (Hoy), `/doctor/configuracion`, `/doctor/qr`, `/doctor/disponibilidad` y `/doctor/citas` (placeholders)
+- `/admin/*` → Super Admin (pendiente)
 - `/design-system` → catálogo visual
 
+Patrón de pantallas: `page.tsx` (Server: `getTenantBySlug` + `notFound()`) + `XxxClient.tsx` (Client, recibe `tenant`).
+
 ## Auth
-- Supabase Auth Phone OTP para pacientes
+- Supabase Auth Email OTP (código de 6 dígitos vía Resend) para pacientes
 - Supabase Auth Email/Password para doctores y admin
 - RLS con `tenant_id` en cada tabla
 - Vista pública `public_busy_slots` (solo fechas/horas, sin datos de paciente)
-- Holds temporales de 5–10 min al entrar a OTP
+- Holds temporales de 10 min al enviar el código (`status='pending'`, `hold_expires_at`)
+- Zona horaria: todas las horas de slots se interpretan en `CLINIC_TIME_ZONE` (`src/lib/clinic-time.ts`), nunca en la del dispositivo. Slots definidos en `src/lib/slots.ts`; helpers de reserva en `src/lib/booking.ts`.
 
 ## Referencias
-- `docs/design-system.md` → design system completo desde Figma
-- Figma: [pega aquí el link de tu archivo de Figma]
+- Figma: https://www.figma.com/design/EOIZZUXVpWYqysHgqNW7tm/

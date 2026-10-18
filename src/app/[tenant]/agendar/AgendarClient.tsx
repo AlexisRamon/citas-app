@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, CalendarCheck } from "lucide-react";
 import { Alert } from "@/components/ui/Alert";
@@ -8,46 +8,114 @@ import { BottomNav } from "@/components/ui/BottomNav";
 import { Button } from "@/components/ui/Button";
 import { CalendarCell } from "@/components/ui/CalendarCell";
 import {
+  getClinicDateIso,
+  getClinicTime,
+  getClinicTodayIso,
+  getNowMs,
+  zonedDateTimeToUtc,
+} from "@/lib/clinic-time";
+import {
   formatDateRange,
   formatLongDate,
+  parseIsoDate,
   toIsoDate,
 } from "@/lib/format-date";
-import { getAvailableCount } from "@/lib/slots-mock";
+import { ALL_SLOTS, isSlotPast } from "@/lib/slots";
+import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
 
 const WEEKDAYS_SHORT = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const CLOSED_WEEKDAYS = [0, 2];
 
-function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function addDays(date: Date, amount: number) {
-  const next = new Date(date);
+function addDaysIso(isoDate: string, amount: number) {
+  const next = parseIsoDate(isoDate);
   next.setDate(next.getDate() + amount);
-  return next;
+  return toIsoDate(next);
 }
 
-function isClosed(date: Date) {
-  const weekday = date.getDay();
-  return weekday === 0 || weekday === 2;
+function isClosedIso(isoDate: string) {
+  return CLOSED_WEEKDAYS.includes(parseIsoDate(isoDate).getDay());
 }
+
+// "Hoy" depende del dispositivo/reloj: se lee solo en el cliente.
+const subscribeToNothing = () => () => {};
+const getServerTodayIso = () => null;
 
 type AgendarClientProps = {
   tenant: Tenant;
 };
 
 export function AgendarClient({ tenant }: AgendarClientProps) {
-  const [week, setWeek] = useState<Date[]>([]);
-  const [selectedIso, setSelectedIso] = useState<string | null>(null);
+  const todayIso = useSyncExternalStore(
+    subscribeToNothing,
+    getClinicTodayIso,
+    getServerTodayIso,
+  );
 
-  // Las fechas se calculan solo en el cliente (evita errores de prerender)
+  const week = useMemo(
+    () =>
+      todayIso ? Array.from({ length: 7 }, (_, i) => addDaysIso(todayIso, i)) : [],
+    [todayIso],
+  );
+
+  const [pickedIso, setPickedIso] = useState<string | null>(null);
+  const [busyByDate, setBusyByDate] = useState<Record<string, Set<string>> | null>(
+    null,
+  );
+  const [nowMs, setNowMs] = useState(0);
+  const [cuposError, setCuposError] = useState(false);
+
+  const firstOpenIso = week.find((iso) => !isClosedIso(iso)) ?? null;
+  const selectedIso = pickedIso ?? firstOpenIso;
+
   useEffect(() => {
-    const today = startOfDay(new Date());
-    const days = Array.from({ length: 7 }, (_, i) => addDays(today, i));
-    const firstOpen = days.find((d) => !isClosed(d)) ?? null;
-    setWeek(days);
-    setSelectedIso(firstOpen ? toIsoDate(firstOpen) : null);
-  }, []);
+    if (week.length === 0) return;
+
+    let cancelled = false;
+
+    async function loadBusy() {
+      try {
+        const supabase = createClient();
+        const rangeStart = zonedDateTimeToUtc(week[0], "00:00:00");
+        const rangeEnd = zonedDateTimeToUtc(
+          addDaysIso(week[week.length - 1], 1),
+          "00:00:00",
+        );
+
+        const { data, error } = await supabase
+          .from("public_busy_slots")
+          .select("starts_at")
+          .eq("tenant_id", tenant.id)
+          .gte("starts_at", rangeStart.toISOString())
+          .lt("starts_at", rangeEnd.toISOString());
+
+        if (cancelled) return;
+
+        if (error || !data) {
+          setCuposError(true);
+          return;
+        }
+
+        const byDate: Record<string, Set<string>> = {};
+        for (const row of data as { starts_at: string }[]) {
+          const iso = getClinicDateIso(row.starts_at);
+          (byDate[iso] ??= new Set()).add(getClinicTime(row.starts_at));
+        }
+
+        setBusyByDate(byDate);
+        setNowMs(getNowMs());
+        setCuposError(false);
+      } catch {
+        if (!cancelled) setCuposError(true);
+      }
+    }
+
+    loadBusy();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [week, tenant.id]);
 
   if (week.length === 0) {
     return (
@@ -63,11 +131,16 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
     );
   }
 
-  const rangeLabel = formatDateRange(
-    toIsoDate(week[0]),
-    toIsoDate(week[week.length - 1]),
-  );
-  const cupos = selectedIso ? getAvailableCount(selectedIso) : 0;
+  const rangeLabel = formatDateRange(week[0], week[week.length - 1]);
+
+  const cupos =
+    selectedIso && busyByDate
+      ? ALL_SLOTS.filter(
+          (time) =>
+            !busyByDate[selectedIso]?.has(time) &&
+            !isSlotPast(selectedIso, time, nowMs),
+        ).length
+      : null;
 
   return (
     <>
@@ -98,9 +171,9 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
 
         <section aria-label="Días disponibles">
           <ul className="-mx-ds-6 flex gap-ds-2 overflow-x-auto px-ds-6 pb-ds-1">
-            {week.map((day) => {
-              const iso = toIsoDate(day);
-              const state = isClosed(day)
+            {week.map((iso) => {
+              const day = parseIsoDate(iso);
+              const state = isClosedIso(iso)
                 ? "closed"
                 : iso === selectedIso
                   ? "selected"
@@ -117,7 +190,7 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
                   <CalendarCell
                     day={String(day.getDate())}
                     state={state}
-                    onClick={() => setSelectedIso(iso)}
+                    onClick={() => setPickedIso(iso)}
                   />
                 </li>
               );
@@ -141,7 +214,11 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
                 {formatLongDate(selectedIso)}
               </p>
               <p className="text-14 text-text-muted">
-                {cupos} {cupos === 1 ? "cupo disponible" : "cupos disponibles"}
+                {cupos === null
+                  ? cuposError
+                    ? "No pudimos consultar la disponibilidad."
+                    : "Consultando disponibilidad…"
+                  : `${cupos} ${cupos === 1 ? "cupo disponible" : "cupos disponibles"}`}
               </p>
             </div>
           </section>

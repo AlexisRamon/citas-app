@@ -6,6 +6,9 @@ import { Mail } from "lucide-react";
 import { BottomSheet } from "@/components/ui/BottomSheet";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { buildHold } from "@/lib/booking";
+import { parseDraft, readDraftRaw, saveDraft } from "@/lib/booking-draft";
+import { getNowMs } from "@/lib/clinic-time";
 import {
   formatLongDate,
   formatTimeLabel,
@@ -17,8 +20,8 @@ import type { Tenant } from "@/lib/tenant";
 import { HorarioClient } from "../horario/HorarioClient";
 
 const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
-const SLOT_MINUTES = 30;
-const HOLD_MINUTES = 10;
+const MIN_HOLD_LEFT_MS = 60 * 1000;
+const SLOT_TAKEN_CODE = "23P01";
 
 type OtpEmailClientProps = {
   tenant: Tenant;
@@ -77,6 +80,71 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
 
     setSending(true);
 
+    // 1) Reservar el horario primero: si ya está tomado, no enviamos correo.
+    //    Si este navegador ya tiene un hold vigente para el mismo horario y
+    //    correo (reintento), se reutiliza en vez de crear otro.
+    const stored = parseDraft(readDraftRaw());
+    const reusable =
+      stored &&
+      stored.tenantId === tenant.id &&
+      stored.date === date &&
+      stored.time === time &&
+      stored.email === normalizedEmail &&
+      stored.expiresAt - getNowMs() > MIN_HOLD_LEFT_MS
+        ? stored
+        : null;
+
+    let holdId: string;
+    let expiresAt: number;
+
+    if (reusable) {
+      holdId = reusable.holdId;
+      expiresAt = reusable.expiresAt;
+    } else {
+      holdId = crypto.randomUUID();
+      const hold = buildHold(date, time);
+
+      const { error: holdError } = await supabase.from("appointments").insert({
+        id: holdId,
+        tenant_id: tenant.id,
+        patient_name: normalizedName,
+        patient_email: normalizedEmail,
+        ...hold,
+        status: "pending",
+      });
+
+      if (holdError) {
+        setError(
+          holdError.code === SLOT_TAKEN_CODE
+            ? "Ese horario ya no está disponible. Elige otro."
+            : "No pudimos reservar el horario. Inténtalo de nuevo.",
+        );
+        setSending(false);
+        return;
+      }
+
+      expiresAt = new Date(hold.hold_expires_at).getTime();
+    }
+
+    const saved = saveDraft({
+      holdId,
+      tenantId: tenant.id,
+      date,
+      time,
+      email: normalizedEmail,
+      name: normalizedName,
+      expiresAt,
+    });
+
+    if (!saved) {
+      setError(
+        "Tu navegador bloquea el almacenamiento y no podemos continuar. Desactiva el modo privado e inténtalo de nuevo.",
+      );
+      setSending(false);
+      return;
+    }
+
+    // 2) Enviar el código.
     const { error: otpError } = await supabase.auth.signInWithOtp({
       email: normalizedEmail,
       options: { shouldCreateUser: true },
@@ -88,36 +156,8 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
       return;
     }
 
-    const startsAt = new Date(`${date}T${time}:00`);
-    const endsAt = new Date(startsAt.getTime() + SLOT_MINUTES * 60 * 1000);
-
-    const { error: holdError } = await supabase.from("appointments").insert({
-      tenant_id: tenant.id,
-      patient_name: normalizedName,
-      patient_email: normalizedEmail,
-      starts_at: startsAt.toISOString(),
-      ends_at: endsAt.toISOString(),
-      status: "pending",
-      hold_expires_at: new Date(
-        Date.now() + HOLD_MINUTES * 60 * 1000,
-      ).toISOString(),
-    });
-
-    if (holdError) {
-      setError(
-        "No pudimos reservar el horario. Elige otro e inténtalo de nuevo.",
-      );
-      setSending(false);
-      return;
-    }
-
     setSending(false);
-    const params = new URLSearchParams({
-      date,
-      time,
-      email: normalizedEmail,
-      name: normalizedName,
-    });
+    const params = new URLSearchParams({ date, time });
     router.push(`/${tenant.slug}/agendar/otp/codigo?${params.toString()}`);
   }
 

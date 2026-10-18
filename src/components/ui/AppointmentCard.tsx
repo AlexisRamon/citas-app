@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/Badge";
+import { CLINIC_TIME_ZONE, getClinicTime } from "@/lib/clinic-time";
 import { formatTimeLabel } from "@/lib/format-date";
 
 export type AppointmentStatus =
@@ -16,27 +17,16 @@ type AppointmentCardProps = {
   timeZone?: string;
 };
 
-const DEFAULT_TIME_ZONE = "America/Mazatlan";
-
-function getLocalTime(isoDate: string, timeZone: string) {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(new Date(isoDate));
-}
-
 export function AppointmentCard({
   startsAt,
   patientName,
   patientEmail,
   reason,
   status,
-  timeZone = DEFAULT_TIME_ZONE,
+  timeZone = CLINIC_TIME_ZONE,
 }: AppointmentCardProps) {
   const [clock, ...periodParts] = formatTimeLabel(
-    getLocalTime(startsAt, timeZone),
+    getClinicTime(startsAt, timeZone),
   ).split(" ");
   const period = periodParts.join(" ");
 

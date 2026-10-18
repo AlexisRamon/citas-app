@@ -1,0 +1,1114 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index e935552..39b9788 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -29,24 +29,29 @@ Tokens dinámicos por tenant (se sobrescriben en runtime):
+ 
+ El resto de tokens son estáticos. Ver `src/app/globals.css` para valores exactos.
+ 
+-## Componentes (12 total)
+-Button, Badge, Input, PhoneInput, OTPInput, Alert, AppointmentCard, CalendarCell, TenantIdentity, QRCard, BottomNav, PageHeader.
++## Componentes (`src/components/ui/`)
++Button, Badge, Input, PhoneInput (sin uso por ahora), OTPInput, Alert, AppointmentCard, CalendarCell, TenantIdentity, QRCard, BottomNav, PageHeader, BottomSheet, SidebarNav.
+ 
+ Ver `src/app/design-system/page.tsx` para el catálogo visual.
+ 
+ ## Rutas
+-- `/[tenant]/*` → paciente (multi-tenant, branding dinámico por CSS vars)
+-- `/doctor/*` → panel del doctor (protegido)
+-- `/admin/*` → Super Admin (protegido)
++- `/` → landing mínima
++- `/[tenant]/*` → paciente (multi-tenant, branding dinámico por CSS vars desde `[tenant]/layout.tsx`)
++  - `/[tenant]` splash · `/home` · `/agendar` (fecha) · `/agendar/horario` · `/agendar/otp` · `/agendar/otp/codigo` · `/agendar/confirmar` · `/mi-cita`
++- `/doctor/login` → login del doctor (público)
++- `/doctor/*` → panel del doctor, grupo `(panel)` protegido por `src/proxy.ts`: `/doctor` (Hoy), `/doctor/configuracion`, `/doctor/qr`, `/doctor/disponibilidad` y `/doctor/citas` (placeholders)
++- `/admin/*` → Super Admin (pendiente)
+ - `/design-system` → catálogo visual
+ 
++Patrón de pantallas: `page.tsx` (Server: `getTenantBySlug` + `notFound()`) + `XxxClient.tsx` (Client, recibe `tenant`).
++
+ ## Auth
+-- Supabase Auth Phone OTP para pacientes
++- Supabase Auth Email OTP (código de 6 dígitos vía Resend) para pacientes
+ - Supabase Auth Email/Password para doctores y admin
+ - RLS con `tenant_id` en cada tabla
+ - Vista pública `public_busy_slots` (solo fechas/horas, sin datos de paciente)
+-- Holds temporales de 5–10 min al entrar a OTP
++- Holds temporales de 10 min al enviar el código (`status='pending'`, `hold_expires_at`)
++- Zona horaria: todas las horas de slots se interpretan en `CLINIC_TIME_ZONE` (`src/lib/clinic-time.ts`), nunca en la del dispositivo. Slots definidos en `src/lib/slots.ts`; helpers de reserva en `src/lib/booking.ts`.
+ 
+ ## Referencias
+-- `docs/design-system.md` → design system completo desde Figma
+-- Figma: [pega aquí el link de tu archivo de Figma]
+\ No newline at end of file
++- Figma: https://www.figma.com/design/EOIZZUXVpWYqysHgqNW7tm/
+\ No newline at end of file
+diff --git a/public/file.svg b/public/file.svg
+deleted file mode 100644
+index 004145c..0000000
+--- a/public/file.svg
++++ /dev/null
+@@ -1 +0,0 @@
+-<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+\ No newline at end of file
+diff --git a/public/globe.svg b/public/globe.svg
+deleted file mode 100644
+index 567f17b..0000000
+--- a/public/globe.svg
++++ /dev/null
+@@ -1 +0,0 @@
+-<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+\ No newline at end of file
+diff --git a/public/next.svg b/public/next.svg
+deleted file mode 100644
+index 5174b28..0000000
+--- a/public/next.svg
++++ /dev/null
+@@ -1 +0,0 @@
+-<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+\ No newline at end of file
+diff --git a/public/vercel.svg b/public/vercel.svg
+deleted file mode 100644
+index 7705396..0000000
+--- a/public/vercel.svg
++++ /dev/null
+@@ -1 +0,0 @@
+-<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+\ No newline at end of file
+diff --git a/public/window.svg b/public/window.svg
+deleted file mode 100644
+index b2b2a44..0000000
+--- a/public/window.svg
++++ /dev/null
+@@ -1 +0,0 @@
+-<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+\ No newline at end of file
+diff --git a/src/app/[tenant]/agendar/AgendarClient.tsx b/src/app/[tenant]/agendar/AgendarClient.tsx
+index aa4e1ca..7e85bcf 100644
+--- a/src/app/[tenant]/agendar/AgendarClient.tsx
++++ b/src/app/[tenant]/agendar/AgendarClient.tsx
+@@ -1,53 +1,121 @@
+ "use client";
+ 
+-import { useEffect, useState } from "react";
++import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+ import Link from "next/link";
+ import { ArrowLeft, ArrowRight, CalendarCheck } from "lucide-react";
+ import { Alert } from "@/components/ui/Alert";
+ import { BottomNav } from "@/components/ui/BottomNav";
+ import { Button } from "@/components/ui/Button";
+ import { CalendarCell } from "@/components/ui/CalendarCell";
++import {
++  getClinicDateIso,
++  getClinicTime,
++  getClinicTodayIso,
++  getNowMs,
++  zonedDateTimeToUtc,
++} from "@/lib/clinic-time";
+ import {
+   formatDateRange,
+   formatLongDate,
++  parseIsoDate,
+   toIsoDate,
+ } from "@/lib/format-date";
+-import { getAvailableCount } from "@/lib/slots-mock";
++import { ALL_SLOTS, isSlotPast } from "@/lib/slots";
++import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ 
+ const WEEKDAYS_SHORT = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
++const CLOSED_WEEKDAYS = [0, 2];
+ 
+-function startOfDay(date: Date) {
+-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+-}
+-
+-function addDays(date: Date, amount: number) {
+-  const next = new Date(date);
++function addDaysIso(isoDate: string, amount: number) {
++  const next = parseIsoDate(isoDate);
+   next.setDate(next.getDate() + amount);
+-  return next;
++  return toIsoDate(next);
+ }
+ 
+-function isClosed(date: Date) {
+-  const weekday = date.getDay();
+-  return weekday === 0 || weekday === 2;
++function isClosedIso(isoDate: string) {
++  return CLOSED_WEEKDAYS.includes(parseIsoDate(isoDate).getDay());
+ }
+ 
++// "Hoy" depende del dispositivo/reloj: se lee solo en el cliente.
++const subscribeToNothing = () => () => {};
++const getServerTodayIso = () => null;
++
+ type AgendarClientProps = {
+   tenant: Tenant;
+ };
+ 
+ export function AgendarClient({ tenant }: AgendarClientProps) {
+-  const [week, setWeek] = useState<Date[]>([]);
+-  const [selectedIso, setSelectedIso] = useState<string | null>(null);
++  const todayIso = useSyncExternalStore(
++    subscribeToNothing,
++    getClinicTodayIso,
++    getServerTodayIso,
++  );
++
++  const week = useMemo(
++    () =>
++      todayIso ? Array.from({ length: 7 }, (_, i) => addDaysIso(todayIso, i)) : [],
++    [todayIso],
++  );
++
++  const [pickedIso, setPickedIso] = useState<string | null>(null);
++  const [busyByDate, setBusyByDate] = useState<Record<string, Set<string>> | null>(
++    null,
++  );
++  const [nowMs, setNowMs] = useState(0);
++  const [cuposError, setCuposError] = useState(false);
++
++  const firstOpenIso = week.find((iso) => !isClosedIso(iso)) ?? null;
++  const selectedIso = pickedIso ?? firstOpenIso;
+ 
+-  // Las fechas se calculan solo en el cliente (evita errores de prerender)
+   useEffect(() => {
+-    const today = startOfDay(new Date());
+-    const days = Array.from({ length: 7 }, (_, i) => addDays(today, i));
+-    const firstOpen = days.find((d) => !isClosed(d)) ?? null;
+-    setWeek(days);
+-    setSelectedIso(firstOpen ? toIsoDate(firstOpen) : null);
+-  }, []);
++    if (week.length === 0) return;
++
++    let cancelled = false;
++
++    async function loadBusy() {
++      try {
++        const supabase = createClient();
++        const rangeStart = zonedDateTimeToUtc(week[0], "00:00:00");
++        const rangeEnd = zonedDateTimeToUtc(
++          addDaysIso(week[week.length - 1], 1),
++          "00:00:00",
++        );
++
++        const { data, error } = await supabase
++          .from("public_busy_slots")
++          .select("starts_at")
++          .eq("tenant_id", tenant.id)
++          .gte("starts_at", rangeStart.toISOString())
++          .lt("starts_at", rangeEnd.toISOString());
++
++        if (cancelled) return;
++
++        if (error || !data) {
++          setCuposError(true);
++          return;
++        }
++
++        const byDate: Record<string, Set<string>> = {};
++        for (const row of data as { starts_at: string }[]) {
++          const iso = getClinicDateIso(row.starts_at);
++          (byDate[iso] ??= new Set()).add(getClinicTime(row.starts_at));
++        }
++
++        setBusyByDate(byDate);
++        setNowMs(getNowMs());
++        setCuposError(false);
++      } catch {
++        if (!cancelled) setCuposError(true);
++      }
++    }
++
++    loadBusy();
++
++    return () => {
++      cancelled = true;
++    };
++  }, [week, tenant.id]);
+ 
+   if (week.length === 0) {
+     return (
+@@ -63,11 +131,16 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+     );
+   }
+ 
+-  const rangeLabel = formatDateRange(
+-    toIsoDate(week[0]),
+-    toIsoDate(week[week.length - 1]),
+-  );
+-  const cupos = selectedIso ? getAvailableCount(selectedIso) : 0;
++  const rangeLabel = formatDateRange(week[0], week[week.length - 1]);
++
++  const cupos =
++    selectedIso && busyByDate
++      ? ALL_SLOTS.filter(
++          (time) =>
++            !busyByDate[selectedIso]?.has(time) &&
++            !isSlotPast(selectedIso, time, nowMs),
++        ).length
++      : null;
+ 
+   return (
+     <>
+@@ -98,9 +171,9 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+ 
+         <section aria-label="Días disponibles">
+           <ul className="-mx-ds-6 flex gap-ds-2 overflow-x-auto px-ds-6 pb-ds-1">
+-            {week.map((day) => {
+-              const iso = toIsoDate(day);
+-              const state = isClosed(day)
++            {week.map((iso) => {
++              const day = parseIsoDate(iso);
++              const state = isClosedIso(iso)
+                 ? "closed"
+                 : iso === selectedIso
+                   ? "selected"
+@@ -117,7 +190,7 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+                   <CalendarCell
+                     day={String(day.getDate())}
+                     state={state}
+-                    onClick={() => setSelectedIso(iso)}
++                    onClick={() => setPickedIso(iso)}
+                   />
+                 </li>
+               );
+@@ -141,7 +214,11 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+                 {formatLongDate(selectedIso)}
+               </p>
+               <p className="text-14 text-text-muted">
+-                {cupos} {cupos === 1 ? "cupo disponible" : "cupos disponibles"}
++                {cupos === null
++                  ? cuposError
++                    ? "No pudimos consultar la disponibilidad."
++                    : "Consultando disponibilidad…"
++                  : `${cupos} ${cupos === 1 ? "cupo disponible" : "cupos disponibles"}`}
+               </p>
+             </div>
+           </section>
+@@ -169,4 +246,4 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+       <BottomNav slug={tenant.slug} activeHref={`/${tenant.slug}/home`} />
+     </>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/[tenant]/agendar/horario/HorarioClient.tsx b/src/app/[tenant]/agendar/horario/HorarioClient.tsx
+index faa3fd6..6cea681 100644
+--- a/src/app/[tenant]/agendar/horario/HorarioClient.tsx
++++ b/src/app/[tenant]/agendar/horario/HorarioClient.tsx
+@@ -21,13 +21,20 @@ import {
+   isValidIsoDate,
+   isValidTime,
+ } from "@/lib/format-date";
++import {
++  getClinicTime,
++  getNowMs,
++  zonedDateTimeToUtc,
++} from "@/lib/clinic-time";
++import {
++  AFTERNOON_SLOTS,
++  ALL_SLOTS,
++  MORNING_SLOTS,
++  isSlotPast,
++} from "@/lib/slots";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ 
+-const MORNING_SLOTS = ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"];
+-const AFTERNOON_SLOTS = ["16:00", "16:30"];
+-const ALL_SLOTS = [...MORNING_SLOTS, ...AFTERNOON_SLOTS];
+-
+ export function HorarioSkeleton({ slug }: { slug: string }) {
+   return (
+     <>
+@@ -82,6 +89,7 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
+   const [loadingSlots, setLoadingSlots] = useState(true);
+   const [loadError, setLoadError] = useState(false);
+   const [reloadKey, setReloadKey] = useState(0);
++  const [nowMs, setNowMs] = useState(0);
+ 
+   useEffect(() => {
+     if (!date) router.replace(`/${tenant.slug}/agendar`);
+@@ -95,8 +103,8 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
+     async function loadBusySlots(isoDate: string) {
+       try {
+         const supabase = createClient();
+-        const dayStart = new Date(`${isoDate}T00:00:00`);
+-        const dayEnd = new Date(`${isoDate}T23:59:59`);
++        const dayStart = zonedDateTimeToUtc(isoDate, "00:00:00");
++        const dayEnd = zonedDateTimeToUtc(isoDate, "23:59:59");
+ 
+         const { data, error } = await supabase
+           .from("public_busy_slots")
+@@ -115,13 +123,11 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
+ 
+         const busy = new Set<string>();
+         for (const row of data as { starts_at: string }[]) {
+-          const d = new Date(row.starts_at);
+-          const hh = String(d.getHours()).padStart(2, "0");
+-          const mm = String(d.getMinutes()).padStart(2, "0");
+-          busy.add(`${hh}:${mm}`);
++          busy.add(getClinicTime(row.starts_at));
+         }
+ 
+         setBusySlots(busy);
++        setNowMs(getNowMs());
+         setLoadError(false);
+         setLoadingSlots(false);
+       } catch {
+@@ -146,17 +152,20 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
+ 
+   if (!date || loadingSlots) return <HorarioSkeleton slug={tenant.slug} />;
+ 
++  const isUnavailable = (time: string) =>
++    busySlots.has(time) || isSlotPast(date, time, nowMs);
++
+   const activeSlot =
+     selectedSlot &&
+     ALL_SLOTS.includes(selectedSlot) &&
+-    !busySlots.has(selectedSlot)
++    !isUnavailable(selectedSlot)
+       ? selectedSlot
+       : null;
+ 
+   function renderSlot(time: string) {
+     const label = formatTimeLabel(time);
+ 
+-    if (busySlots.has(time)) {
++    if (isUnavailable(time)) {
+       return (
+         <li key={time}>
+           <Button
+@@ -165,7 +174,7 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
+             className="w-full line-through"
+           >
+             {label}
+-            <span className="sr-only">, ocupado</span>
++            <span className="sr-only">, no disponible</span>
+           </Button>
+         </li>
+       );
+diff --git a/src/app/[tenant]/agendar/horario/page.tsx b/src/app/[tenant]/agendar/horario/page.tsx
+index 4d7c2a3..abc5b17 100644
+--- a/src/app/[tenant]/agendar/horario/page.tsx
++++ b/src/app/[tenant]/agendar/horario/page.tsx
+@@ -1,5 +1,5 @@
+ import { Suspense } from "react";
+-import { notFound } from "next/navigation";
++import { notFound, redirect } from "next/navigation";
+ import { getTenantBySlug } from "@/lib/tenant";
+ import { HorarioClient, HorarioSkeleton } from "./HorarioClient";
+ 
+@@ -11,6 +11,9 @@ export default async function HorarioPage({ params }: PageProps) {
+   const { tenant: slug } = await params;
+   const tenant = await getTenantBySlug(slug);
+   if (!tenant) notFound();
++  if (tenant.currentStatus === "agenda-cerrada") {
++    redirect(`/${tenant.slug}/home`);
++  }
+ 
+   return (
+     <Suspense fallback={<HorarioSkeleton slug={tenant.slug} />}>
+diff --git a/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx b/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
+index 033009b..eecb1d2 100644
+--- a/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
++++ b/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
+@@ -12,13 +12,12 @@ import {
+   isValidIsoDate,
+   isValidTime,
+ } from "@/lib/format-date";
++import { buildHold } from "@/lib/booking";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ import { HorarioClient } from "../horario/HorarioClient";
+ 
+ const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
+-const SLOT_MINUTES = 30;
+-const HOLD_MINUTES = 10;
+ 
+ type OtpEmailClientProps = {
+   tenant: Tenant;
+@@ -88,19 +87,12 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
+       return;
+     }
+ 
+-    const startsAt = new Date(`${date}T${time}:00`);
+-    const endsAt = new Date(startsAt.getTime() + SLOT_MINUTES * 60 * 1000);
+-
+     const { error: holdError } = await supabase.from("appointments").insert({
+       tenant_id: tenant.id,
+       patient_name: normalizedName,
+       patient_email: normalizedEmail,
+-      starts_at: startsAt.toISOString(),
+-      ends_at: endsAt.toISOString(),
++      ...buildHold(date, time),
+       status: "pending",
+-      hold_expires_at: new Date(
+-        Date.now() + HOLD_MINUTES * 60 * 1000,
+-      ).toISOString(),
+     });
+ 
+     if (holdError) {
+diff --git a/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx b/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
+index e8522d6..55a18c1 100644
+--- a/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
++++ b/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
+@@ -6,6 +6,7 @@ import { BottomSheet } from "@/components/ui/BottomSheet";
+ import { Button } from "@/components/ui/Button";
+ import { OTPInput } from "@/components/ui/OTPInput";
+ import { isValidIsoDate, isValidTime } from "@/lib/format-date";
++import { getSlotStart } from "@/lib/booking";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ import { HorarioClient } from "../../horario/HorarioClient";
+@@ -94,7 +95,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+       return;
+     }
+ 
+-    const startsAt = new Date(`${date}T${time}:00`);
++    const startsAt = getSlotStart(date, time);
+ 
+     const { error: updateError, count } = await supabase
+       .from("appointments")
+diff --git a/src/app/[tenant]/agendar/otp/codigo/page.tsx b/src/app/[tenant]/agendar/otp/codigo/page.tsx
+index ecb2703..2d84ed3 100644
+--- a/src/app/[tenant]/agendar/otp/codigo/page.tsx
++++ b/src/app/[tenant]/agendar/otp/codigo/page.tsx
+@@ -1,5 +1,5 @@
+ import { Suspense } from "react";
+-import { notFound } from "next/navigation";
++import { notFound, redirect } from "next/navigation";
+ import { getTenantBySlug } from "@/lib/tenant";
+ import { OtpCodeEmailClient } from "./OtpCodeEmailClient";
+ 
+@@ -11,6 +11,9 @@ export default async function OtpCodePage({ params }: PageProps) {
+   const { tenant: slug } = await params;
+   const tenant = await getTenantBySlug(slug);
+   if (!tenant) notFound();
++  if (tenant.currentStatus === "agenda-cerrada") {
++    redirect(`/${tenant.slug}/home`);
++  }
+ 
+   return (
+     <Suspense fallback={null}>
+diff --git a/src/app/[tenant]/agendar/otp/page.tsx b/src/app/[tenant]/agendar/otp/page.tsx
+index 32e1eb2..43f32e0 100644
+--- a/src/app/[tenant]/agendar/otp/page.tsx
++++ b/src/app/[tenant]/agendar/otp/page.tsx
+@@ -1,5 +1,5 @@
+ import { Suspense } from "react";
+-import { notFound } from "next/navigation";
++import { notFound, redirect } from "next/navigation";
+ import { getTenantBySlug } from "@/lib/tenant";
+ import { OtpEmailClient } from "./OtpEmailClient";
+ 
+@@ -11,6 +11,9 @@ export default async function OtpEmailPage({ params }: PageProps) {
+   const { tenant: slug } = await params;
+   const tenant = await getTenantBySlug(slug);
+   if (!tenant) notFound();
++  if (tenant.currentStatus === "agenda-cerrada") {
++    redirect(`/${tenant.slug}/home`);
++  }
+ 
+   return (
+     <Suspense fallback={null}>
+diff --git a/src/app/[tenant]/agendar/page.tsx b/src/app/[tenant]/agendar/page.tsx
+index 7889d57..bae7086 100644
+--- a/src/app/[tenant]/agendar/page.tsx
++++ b/src/app/[tenant]/agendar/page.tsx
+@@ -1,4 +1,4 @@
+-import { notFound } from "next/navigation";
++import { notFound, redirect } from "next/navigation";
+ import { getTenantBySlug } from "@/lib/tenant";
+ import { AgendarClient } from "./AgendarClient";
+ 
+@@ -10,6 +10,9 @@ export default async function AgendarPage({ params }: PageProps) {
+   const { tenant: slug } = await params;
+   const tenant = await getTenantBySlug(slug);
+   if (!tenant) notFound();
++  if (tenant.currentStatus === "agenda-cerrada") {
++    redirect(`/${tenant.slug}/home`);
++  }
+ 
+   return <AgendarClient tenant={tenant} />;
+ }
+\ No newline at end of file
+diff --git a/src/app/doctor/(panel)/ConfiguracionClient.tsx b/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
+similarity index 100%
+rename from src/app/doctor/(panel)/ConfiguracionClient.tsx
+rename to src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
+diff --git a/src/app/doctor/(panel)/configuracion/page.tsx b/src/app/doctor/(panel)/configuracion/page.tsx
+new file mode 100644
+index 0000000..7b6f5a9
+--- /dev/null
++++ b/src/app/doctor/(panel)/configuracion/page.tsx
+@@ -0,0 +1,59 @@
++import { redirect } from "next/navigation";
++import { createClient } from "@/lib/supabase/server";
++import { ConfiguracionClient } from "./ConfiguracionClient";
++
++type TenantRow = {
++  id: string;
++  slug: string;
++  name: string;
++  initials: string;
++  specialty: string | null;
++  address: string | null;
++  city: string | null;
++  phone: string | null;
++  photo_url: string | null;
++  primary_color: string | null;
++  primary_color_hover: string | null;
++};
++
++export default async function ConfiguracionPage() {
++  const supabase = await createClient();
++
++  const {
++    data: { user },
++  } = await supabase.auth.getUser();
++
++  if (!user) redirect("/doctor/login");
++
++  const { data: profile } = await supabase
++    .from("doctor_profiles")
++    .select(
++      "tenants(id, slug, name, initials, specialty, address, city, phone, photo_url, primary_color, primary_color_hover)",
++    )
++    .eq("user_id", user.id)
++    .maybeSingle<{ tenants: TenantRow | null }>();
++
++  if (!profile || !profile.tenants) {
++    redirect("/doctor/login?error=sin-acceso");
++  }
++
++  const tenant = profile.tenants;
++
++  return (
++    <ConfiguracionClient
++      tenant={{
++        id: tenant.id,
++        slug: tenant.slug,
++        name: tenant.name,
++        initials: tenant.initials,
++        specialty: tenant.specialty,
++        address: tenant.address,
++        city: tenant.city,
++        phone: tenant.phone,
++        photoUrl: tenant.photo_url,
++        primaryColor: tenant.primary_color,
++        primaryHoverColor: tenant.primary_color_hover,
++      }}
++    />
++  );
++}
+\ No newline at end of file
+diff --git a/src/app/doctor/(panel)/page.tsx b/src/app/doctor/(panel)/page.tsx
+index 7b6f5a9..b0d023c 100644
+--- a/src/app/doctor/(panel)/page.tsx
++++ b/src/app/doctor/(panel)/page.tsx
+@@ -1,22 +1,32 @@
+ import { redirect } from "next/navigation";
++import { CalendarX2, LockKeyhole } from "lucide-react";
++import { Alert } from "@/components/ui/Alert";
++import { AppointmentCard } from "@/components/ui/AppointmentCard";
++import type { AppointmentStatus } from "@/components/ui/AppointmentCard";
++import { Badge } from "@/components/ui/Badge";
++import { Button } from "@/components/ui/Button";
++import { PageHeader } from "@/components/ui/PageHeader";
++import {
++  CLINIC_TIME_ZONE,
++  getClinicTodayIso,
++  zonedDateTimeToUtc,
++} from "@/lib/clinic-time";
++import { formatLongDate } from "@/lib/format-date";
+ import { createClient } from "@/lib/supabase/server";
+-import { ConfiguracionClient } from "./ConfiguracionClient";
+ 
+-type TenantRow = {
++const VISIBLE_STATUSES: AppointmentStatus[] = ["confirmed", "attended"];
++
++type AppointmentRow = {
+   id: string;
+-  slug: string;
+-  name: string;
+-  initials: string;
+-  specialty: string | null;
+-  address: string | null;
+-  city: string | null;
+-  phone: string | null;
+-  photo_url: string | null;
+-  primary_color: string | null;
+-  primary_color_hover: string | null;
++  starts_at: string;
++  ends_at: string;
++  patient_name: string | null;
++  patient_email: string | null;
++  reason: string | null;
++  status: AppointmentStatus;
+ };
+ 
+-export default async function ConfiguracionPage() {
++export default async function DoctorDashboardPage() {
+   const supabase = await createClient();
+ 
+   const {
+@@ -27,33 +37,104 @@ export default async function ConfiguracionPage() {
+ 
+   const { data: profile } = await supabase
+     .from("doctor_profiles")
+-    .select(
+-      "tenants(id, slug, name, initials, specialty, address, city, phone, photo_url, primary_color, primary_color_hover)",
+-    )
++    .select("tenant_id")
+     .eq("user_id", user.id)
+-    .maybeSingle<{ tenants: TenantRow | null }>();
++    .maybeSingle<{ tenant_id: string }>();
++
++  if (!profile) redirect("/doctor/login?error=sin-acceso");
++
++  const todayIso = getClinicTodayIso();
++  const dayStart = zonedDateTimeToUtc(todayIso, "00:00:00");
++  const dayEnd = zonedDateTimeToUtc(todayIso, "23:59:59");
++
++  const { data, error } = await supabase
++    .from("appointments")
++    .select("id, starts_at, ends_at, patient_name, patient_email, reason, status")
++    .eq("tenant_id", profile.tenant_id)
++    .in("status", VISIBLE_STATUSES)
++    .gte("starts_at", dayStart.toISOString())
++    .lte("starts_at", dayEnd.toISOString())
++    .order("starts_at", { ascending: true });
+ 
+-  if (!profile || !profile.tenants) {
+-    redirect("/doctor/login?error=sin-acceso");
+-  }
++  const citas = (data ?? []) as AppointmentRow[];
++  const total = citas.length;
+ 
+-  const tenant = profile.tenants;
++  const title =
++    total > 0
++      ? `Hoy · ${formatLongDate(todayIso)} · ${total} ${total === 1 ? "cita" : "citas"}`
++      : `Hoy · ${formatLongDate(todayIso)}`;
+ 
+   return (
+-    <ConfiguracionClient
+-      tenant={{
+-        id: tenant.id,
+-        slug: tenant.slug,
+-        name: tenant.name,
+-        initials: tenant.initials,
+-        specialty: tenant.specialty,
+-        address: tenant.address,
+-        city: tenant.city,
+-        phone: tenant.phone,
+-        photoUrl: tenant.photo_url,
+-        primaryColor: tenant.primary_color,
+-        primaryHoverColor: tenant.primary_color_hover,
+-      }}
+-    />
++    <>
++      <div className="flex flex-col gap-ds-6 pb-[calc(56px+var(--spacing-ds-7)+var(--spacing-ds-6))]">
++        <PageHeader
++          title={title}
++          subtitle="Tu agenda del día, en un solo lugar."
++          actions={<Badge variant="verificado" />}
++        />
++
++        {error ? (
++          <Alert
++            variant="danger"
++            title="No pudimos cargar las citas de hoy"
++            description="Recarga la página e inténtalo de nuevo."
++          />
++        ) : total === 0 ? (
++          <section
++            aria-labelledby="sin-citas"
++            className="flex flex-col items-center justify-center gap-ds-3 py-ds-8 text-center"
++          >
++            <CalendarX2
++              size={64}
++              aria-hidden="true"
++              className="text-text-muted"
++            />
++            <h2 id="sin-citas" className="text-20 font-bold text-text">
++              No hay citas hoy
++            </h2>
++            <p className="text-14 text-text-muted">
++              Cuando alguien agende, aparecerá aquí.
++            </p>
++          </section>
++        ) : (
++          <section
++            aria-labelledby="pacientes-hoy"
++            className="flex flex-col gap-ds-2"
++          >
++            <div className="flex items-center justify-between gap-ds-3 pb-ds-2 text-14 text-text-muted">
++              <h2 id="pacientes-hoy" className="font-bold uppercase">
++                Pacientes de hoy
++              </h2>
++              <p>
++                {total} {total === 1 ? "cita programada" : "citas programadas"}
++              </p>
++            </div>
++
++            <ul className="flex flex-col gap-ds-2">
++              {citas.map((cita) => (
++                <li key={cita.id}>
++                  <AppointmentCard
++                    startsAt={cita.starts_at}
++                    patientName={cita.patient_name ?? "Paciente sin nombre"}
++                    patientEmail={cita.patient_email}
++                    reason={cita.reason}
++                    status={cita.status}
++                    timeZone={CLINIC_TIME_ZONE}
++                  />
++                </li>
++              ))}
++            </ul>
++          </section>
++        )}
++      </div>
++
++      <Button
++        variant="primary"
++        icon={<LockKeyhole size={20} aria-hidden="true" />}
++        className="fixed bottom-ds-7 right-ds-7 z-30 w-[208px]"
++      >
++        Cerrar agenda
++      </Button>
++    </>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index c887311..d112041 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -1,69 +1,28 @@
+-import Image from "next/image";
++import Link from "next/link";
++import { CalendarCheck } from "lucide-react";
+ 
+-export default function Home() {
++export default function LandingPage() {
+   return (
+-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
+-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
+-        <Image
+-          className="dark:invert h-5 w-[100px]"
+-          src="/next.svg"
+-          alt="Next.js logo"
+-          width={100}
+-          height={20}
+-          priority
+-        />
+-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
+-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
+-            To get started, edit the{" "}
+-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
+-              page.tsx
+-            </code>{" "}
+-            file.
+-          </h1>
+-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
+-            Looking for a starting point or more instructions? Head over to{" "}
+-            <a
+-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
+-              className="font-medium text-zinc-950 dark:text-zinc-50"
+-            >
+-              Templates
+-            </a>{" "}
+-            or the{" "}
+-            <a
+-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
+-              className="font-medium text-zinc-950 dark:text-zinc-50"
+-            >
+-              Learning
+-            </a>{" "}
+-            center.
+-          </p>
+-        </div>
+-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
+-          <a
+-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
+-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
+-            target="_blank"
+-            rel="noopener noreferrer"
+-          >
+-            <Image
+-              className="dark:invert h-[14px] w-4"
+-              src="/vercel.svg"
+-              alt="Vercel logomark"
+-              width={16}
+-              height={14}
+-            />
+-            Deploy Now
+-          </a>
+-          <a
+-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
+-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
+-            target="_blank"
+-            rel="noopener noreferrer"
+-          >
+-            Documentation
+-          </a>
+-        </div>
+-      </main>
+-    </div>
++    <main className="flex min-h-dvh flex-col items-center justify-center gap-ds-6 bg-background px-ds-6 py-ds-8 text-center">
++      <div
++        aria-hidden="true"
++        className="flex size-[72px] items-center justify-center rounded-lg bg-surface-soft text-primary"
++      >
++        <CalendarCheck size={32} />
++      </div>
++      <div className="flex max-w-[400px] flex-col gap-ds-2">
++        <h1 className="text-24 font-bold text-text">Agenda tu cita</h1>
++        <p className="text-16 text-text-muted">
++          Escanea el código QR de tu consultorio o abre el enlace que te
++          compartieron para reservar tu consulta.
++        </p>
++      </div>
++      <Link
++        href="/doctor/login"
++        className="flex min-h-[44px] items-center text-14 font-bold text-primary underline"
++      >
++        Soy doctor
++      </Link>
++    </main>
+   );
+ }
+diff --git a/src/components/ui/AppointmentCard.tsx b/src/components/ui/AppointmentCard.tsx
+index 4a189f3..4b067d1 100644
+--- a/src/components/ui/AppointmentCard.tsx
++++ b/src/components/ui/AppointmentCard.tsx
+@@ -1,4 +1,5 @@
+ import { Badge } from "@/components/ui/Badge";
++import { CLINIC_TIME_ZONE, getClinicTime } from "@/lib/clinic-time";
+ import { formatTimeLabel } from "@/lib/format-date";
+ 
+ export type AppointmentStatus =
+@@ -16,27 +17,16 @@ type AppointmentCardProps = {
+   timeZone?: string;
+ };
+ 
+-const DEFAULT_TIME_ZONE = "America/Mazatlan";
+-
+-function getLocalTime(isoDate: string, timeZone: string) {
+-  return new Intl.DateTimeFormat("en-GB", {
+-    timeZone,
+-    hour: "2-digit",
+-    minute: "2-digit",
+-    hourCycle: "h23",
+-  }).format(new Date(isoDate));
+-}
+-
+ export function AppointmentCard({
+   startsAt,
+   patientName,
+   patientEmail,
+   reason,
+   status,
+-  timeZone = DEFAULT_TIME_ZONE,
++  timeZone = CLINIC_TIME_ZONE,
+ }: AppointmentCardProps) {
+   const [clock, ...periodParts] = formatTimeLabel(
+-    getLocalTime(startsAt, timeZone),
++    getClinicTime(startsAt, timeZone),
+   ).split(" ");
+   const period = periodParts.join(" ");
+ 
+diff --git a/src/components/ui/BottomSheet.tsx b/src/components/ui/BottomSheet.tsx
+index 12ece0f..daa064a 100644
+--- a/src/components/ui/BottomSheet.tsx
++++ b/src/components/ui/BottomSheet.tsx
+@@ -21,6 +21,11 @@ export function BottomSheet({
+   const titleId = useId();
+   const descriptionId = useId();
+   const sheetRef = useRef<HTMLDivElement>(null);
++  const onCloseRef = useRef(onClose);
++
++  useEffect(() => {
++    onCloseRef.current = onClose;
++  }, [onClose]);
+ 
+   useEffect(() => {
+     if (!open) return;
+@@ -31,7 +36,7 @@ export function BottomSheet({
+     sheetRef.current?.focus();
+ 
+     function handleKeyDown(event: KeyboardEvent) {
+-      if (event.key === "Escape") onClose();
++      if (event.key === "Escape") onCloseRef.current();
+     }
+     document.addEventListener("keydown", handleKeyDown);
+ 
+@@ -40,7 +45,7 @@ export function BottomSheet({
+       document.removeEventListener("keydown", handleKeyDown);
+       previouslyFocused?.focus();
+     };
+-  }, [open, onClose]);
++  }, [open]);
+ 
+   return (
+     <>
+diff --git a/src/lib/booking.ts b/src/lib/booking.ts
+new file mode 100644
+index 0000000..e1043df
+--- /dev/null
++++ b/src/lib/booking.ts
+@@ -0,0 +1,22 @@
++import { getNowMs, zonedDateTimeToUtc } from "@/lib/clinic-time";
++
++export const SLOT_MINUTES = 30;
++export const HOLD_MINUTES = 10;
++
++/** Inicio del slot como instante UTC (la hora se lee en zona del consultorio). */
++export function getSlotStart(isoDate: string, time: string): Date {
++  return zonedDateTimeToUtc(isoDate, time);
++}
++
++/** Campos de tiempo para insertar un hold temporal en `appointments`. */
++export function buildHold(isoDate: string, time: string) {
++  const startsAt = getSlotStart(isoDate, time);
++  const endsAt = new Date(startsAt.getTime() + SLOT_MINUTES * 60 * 1000);
++  const holdExpiresAt = new Date(getNowMs() + HOLD_MINUTES * 60 * 1000);
++
++  return {
++    starts_at: startsAt.toISOString(),
++    ends_at: endsAt.toISOString(),
++    hold_expires_at: holdExpiresAt.toISOString(),
++  };
++}
+diff --git a/src/lib/clinic-time.ts b/src/lib/clinic-time.ts
+new file mode 100644
+index 0000000..6fd5f39
+--- /dev/null
++++ b/src/lib/clinic-time.ts
+@@ -0,0 +1,76 @@
++// Zona horaria del consultorio. Todas las horas de slots ("09:00") se
++// interpretan en esta zona, sin importar el dispositivo del paciente.
++// TODO: moverla a una columna `timezone` en `tenants`.
++export const CLINIC_TIME_ZONE = "America/Mazatlan";
++
++export function getNowMs(): number {
++  return Date.now();
++}
++
++function getTimeZoneOffsetMs(date: Date, timeZone: string) {
++  const parts = new Intl.DateTimeFormat("en-US", {
++    timeZone,
++    hourCycle: "h23",
++    year: "numeric",
++    month: "2-digit",
++    day: "2-digit",
++    hour: "2-digit",
++    minute: "2-digit",
++    second: "2-digit",
++  }).formatToParts(date);
++
++  const get = (type: string) =>
++    Number(parts.find((part) => part.type === type)?.value);
++
++  const asUtc = Date.UTC(
++    get("year"),
++    get("month") - 1,
++    get("day"),
++    get("hour"),
++    get("minute"),
++    get("second"),
++  );
++
++  return asUtc - date.getTime();
++}
++
++/** "2026-10-16" + "09:30" (hora del consultorio) → instante UTC. */
++export function zonedDateTimeToUtc(
++  isoDate: string,
++  time: string,
++  timeZone: string = CLINIC_TIME_ZONE,
++): Date {
++  const normalized = time.length === 5 ? `${time}:00` : time;
++  const guess = new Date(`${isoDate}T${normalized}Z`);
++  return new Date(guess.getTime() - getTimeZoneOffsetMs(guess, timeZone));
++}
++
++/** Instante → fecha "YYYY-MM-DD" en la zona del consultorio. */
++export function getClinicDateIso(
++  date: Date | string,
++  timeZone: string = CLINIC_TIME_ZONE,
++): string {
++  return new Intl.DateTimeFormat("en-CA", {
++    timeZone,
++    year: "numeric",
++    month: "2-digit",
++    day: "2-digit",
++  }).format(new Date(date));
++}
++
++/** Instante → hora "HH:MM" (24 h) en la zona del consultorio. */
++export function getClinicTime(
++  date: Date | string,
++  timeZone: string = CLINIC_TIME_ZONE,
++): string {
++  return new Intl.DateTimeFormat("en-GB", {
++    timeZone,
++    hour: "2-digit",
++    minute: "2-digit",
++    hourCycle: "h23",
++  }).format(new Date(date));
++}
++
++export function getClinicTodayIso(): string {
++  return getClinicDateIso(new Date());
++}
+diff --git a/src/lib/slots-mock.ts b/src/lib/slots-mock.ts
+deleted file mode 100644
+index 2d69011..0000000
+--- a/src/lib/slots-mock.ts
++++ /dev/null
+@@ -1,22 +0,0 @@
+-export const ALL_SLOTS = [
+-  "09:00", "09:30", "10:00", "10:30", "11:00", "11:30",
+-  "16:00", "16:30",
+-] as const;
+-
+-export const MORNING_SLOTS = ALL_SLOTS.slice(0, 6);
+-export const AFTERNOON_SLOTS = ALL_SLOTS.slice(6);
+-
+-export function isKnownSlot(time: string): boolean {
+-  return (ALL_SLOTS as readonly string[]).includes(time);
+-}
+-
+-export function getBusySlots(isoDate: string): Set<string> {
+-  const day = parseInt(isoDate.split("-")[2], 10);
+-  return new Set<string>(
+-    ALL_SLOTS.filter((_, i) => (i + day) % 3 === 0),
+-  );
+-}
+-
+-export function getAvailableCount(isoDate: string): number {
+-  return ALL_SLOTS.length - getBusySlots(isoDate).size;
+-}
+\ No newline at end of file
+diff --git a/src/lib/slots.ts b/src/lib/slots.ts
+new file mode 100644
+index 0000000..e7b2dd5
+--- /dev/null
++++ b/src/lib/slots.ts
+@@ -0,0 +1,10 @@
++import { zonedDateTimeToUtc } from "@/lib/clinic-time";
++
++export const MORNING_SLOTS = ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"];
++export const AFTERNOON_SLOTS = ["16:00", "16:30"];
++export const ALL_SLOTS = [...MORNING_SLOTS, ...AFTERNOON_SLOTS];
++
++/** Un slot ya empezó (o empieza ahora) en hora del consultorio. */
++export function isSlotPast(isoDate: string, time: string, nowMs: number) {
++  return nowMs > 0 && zonedDateTimeToUtc(isoDate, time).getTime() <= nowMs;
++}

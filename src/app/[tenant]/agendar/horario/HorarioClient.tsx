@@ -21,12 +21,19 @@ import {
   isValidIsoDate,
   isValidTime,
 } from "@/lib/format-date";
+import {
+  getClinicTime,
+  getNowMs,
+  zonedDateTimeToUtc,
+} from "@/lib/clinic-time";
+import {
+  AFTERNOON_SLOTS,
+  ALL_SLOTS,
+  MORNING_SLOTS,
+  isSlotPast,
+} from "@/lib/slots";
 import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
-
-const MORNING_SLOTS = ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"];
-const AFTERNOON_SLOTS = ["16:00", "16:30"];
-const ALL_SLOTS = [...MORNING_SLOTS, ...AFTERNOON_SLOTS];
 
 export function HorarioSkeleton({ slug }: { slug: string }) {
   return (
@@ -82,6 +89,7 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [nowMs, setNowMs] = useState(0);
 
   useEffect(() => {
     if (!date) router.replace(`/${tenant.slug}/agendar`);
@@ -95,8 +103,8 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
     async function loadBusySlots(isoDate: string) {
       try {
         const supabase = createClient();
-        const dayStart = new Date(`${isoDate}T00:00:00`);
-        const dayEnd = new Date(`${isoDate}T23:59:59`);
+        const dayStart = zonedDateTimeToUtc(isoDate, "00:00:00");
+        const dayEnd = zonedDateTimeToUtc(isoDate, "23:59:59");
 
         const { data, error } = await supabase
           .from("public_busy_slots")
@@ -115,13 +123,11 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
 
         const busy = new Set<string>();
         for (const row of data as { starts_at: string }[]) {
-          const d = new Date(row.starts_at);
-          const hh = String(d.getHours()).padStart(2, "0");
-          const mm = String(d.getMinutes()).padStart(2, "0");
-          busy.add(`${hh}:${mm}`);
+          busy.add(getClinicTime(row.starts_at));
         }
 
         setBusySlots(busy);
+        setNowMs(getNowMs());
         setLoadError(false);
         setLoadingSlots(false);
       } catch {
@@ -146,17 +152,20 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
 
   if (!date || loadingSlots) return <HorarioSkeleton slug={tenant.slug} />;
 
+  const isUnavailable = (time: string) =>
+    busySlots.has(time) || isSlotPast(date, time, nowMs);
+
   const activeSlot =
     selectedSlot &&
     ALL_SLOTS.includes(selectedSlot) &&
-    !busySlots.has(selectedSlot)
+    !isUnavailable(selectedSlot)
       ? selectedSlot
       : null;
 
   function renderSlot(time: string) {
     const label = formatTimeLabel(time);
 
-    if (busySlots.has(time)) {
+    if (isUnavailable(time)) {
       return (
         <li key={time}>
           <Button
@@ -165,7 +174,7 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
             className="w-full line-through"
           >
             {label}
-            <span className="sr-only">, ocupado</span>
+            <span className="sr-only">, no disponible</span>
           </Button>
         </li>
       );

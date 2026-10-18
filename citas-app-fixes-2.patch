@@ -1,0 +1,583 @@
+diff --git a/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx b/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
+index eecb1d2..93df582 100644
+--- a/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
++++ b/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
+@@ -6,18 +6,22 @@ import { Mail } from "lucide-react";
+ import { BottomSheet } from "@/components/ui/BottomSheet";
+ import { Button } from "@/components/ui/Button";
+ import { Input } from "@/components/ui/Input";
++import { buildHold } from "@/lib/booking";
++import { parseDraft, readDraftRaw, saveDraft } from "@/lib/booking-draft";
++import { getNowMs } from "@/lib/clinic-time";
+ import {
+   formatLongDate,
+   formatTimeLabel,
+   isValidIsoDate,
+   isValidTime,
+ } from "@/lib/format-date";
+-import { buildHold } from "@/lib/booking";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ import { HorarioClient } from "../horario/HorarioClient";
+ 
+ const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
++const MIN_HOLD_LEFT_MS = 60 * 1000;
++const SLOT_TAKEN_CODE = "23P01";
+ 
+ type OtpEmailClientProps = {
+   tenant: Tenant;
+@@ -76,40 +80,84 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
+ 
+     setSending(true);
+ 
+-    const { error: otpError } = await supabase.auth.signInWithOtp({
++    // 1) Reservar el horario primero: si ya está tomado, no enviamos correo.
++    //    Si este navegador ya tiene un hold vigente para el mismo horario y
++    //    correo (reintento), se reutiliza en vez de crear otro.
++    const stored = parseDraft(readDraftRaw());
++    const reusable =
++      stored &&
++      stored.tenantId === tenant.id &&
++      stored.date === date &&
++      stored.time === time &&
++      stored.email === normalizedEmail &&
++      stored.expiresAt - getNowMs() > MIN_HOLD_LEFT_MS
++        ? stored
++        : null;
++
++    let holdId: string;
++    let expiresAt: number;
++
++    if (reusable) {
++      holdId = reusable.holdId;
++      expiresAt = reusable.expiresAt;
++    } else {
++      holdId = crypto.randomUUID();
++      const hold = buildHold(date, time);
++
++      const { error: holdError } = await supabase.from("appointments").insert({
++        id: holdId,
++        tenant_id: tenant.id,
++        patient_name: normalizedName,
++        patient_email: normalizedEmail,
++        ...hold,
++        status: "pending",
++      });
++
++      if (holdError) {
++        setError(
++          holdError.code === SLOT_TAKEN_CODE
++            ? "Ese horario ya no está disponible. Elige otro."
++            : "No pudimos reservar el horario. Inténtalo de nuevo.",
++        );
++        setSending(false);
++        return;
++      }
++
++      expiresAt = new Date(hold.hold_expires_at).getTime();
++    }
++
++    const saved = saveDraft({
++      holdId,
++      tenantId: tenant.id,
++      date,
++      time,
+       email: normalizedEmail,
+-      options: { shouldCreateUser: true },
++      name: normalizedName,
++      expiresAt,
+     });
+ 
+-    if (otpError) {
+-      setError("No pudimos enviar el código. Inténtalo de nuevo.");
++    if (!saved) {
++      setError(
++        "Tu navegador bloquea el almacenamiento y no podemos continuar. Desactiva el modo privado e inténtalo de nuevo.",
++      );
+       setSending(false);
+       return;
+     }
+ 
+-    const { error: holdError } = await supabase.from("appointments").insert({
+-      tenant_id: tenant.id,
+-      patient_name: normalizedName,
+-      patient_email: normalizedEmail,
+-      ...buildHold(date, time),
+-      status: "pending",
++    // 2) Enviar el código.
++    const { error: otpError } = await supabase.auth.signInWithOtp({
++      email: normalizedEmail,
++      options: { shouldCreateUser: true },
+     });
+ 
+-    if (holdError) {
+-      setError(
+-        "No pudimos reservar el horario. Elige otro e inténtalo de nuevo.",
+-      );
++    if (otpError) {
++      setError("No pudimos enviar el código. Inténtalo de nuevo.");
+       setSending(false);
+       return;
+     }
+ 
+     setSending(false);
+-    const params = new URLSearchParams({
+-      date,
+-      time,
+-      email: normalizedEmail,
+-      name: normalizedName,
+-    });
++    const params = new URLSearchParams({ date, time });
+     router.push(`/${tenant.slug}/agendar/otp/codigo?${params.toString()}`);
+   }
+ 
+@@ -170,4 +218,4 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
+       </BottomSheet>
+     </>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx b/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
+index 55a18c1..05b9132 100644
+--- a/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
++++ b/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
+@@ -1,19 +1,41 @@
+ "use client";
+ 
+-import { Suspense, useCallback, useEffect, useState } from "react";
++import {
++  Suspense,
++  useCallback,
++  useEffect,
++  useMemo,
++  useState,
++  useSyncExternalStore,
++} from "react";
+ import { useRouter, useSearchParams } from "next/navigation";
+ import { BottomSheet } from "@/components/ui/BottomSheet";
+ import { Button } from "@/components/ui/Button";
+ import { OTPInput } from "@/components/ui/OTPInput";
++import {
++  clearDraft,
++  parseDraft,
++  readDraftRaw,
++  subscribeToDraft,
++} from "@/lib/booking-draft";
+ import { isValidIsoDate, isValidTime } from "@/lib/format-date";
+-import { getSlotStart } from "@/lib/booking";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ import { HorarioClient } from "../../horario/HorarioClient";
+ 
+-const CODE_LENGTH = 8;
++const CODE_LENGTH = 6;
+ const RESEND_SECONDS = 24;
+-const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
++
++const subscribeToNothing = () => () => {};
++const getServerDraft = () => null;
++
++function useIsClient() {
++  return useSyncExternalStore(
++    subscribeToNothing,
++    () => true,
++    () => false,
++  );
++}
+ 
+ type OtpCodeEmailClientProps = {
+   tenant: Tenant;
+@@ -23,16 +45,26 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+   const router = useRouter();
+   const searchParams = useSearchParams();
+   const supabase = createClient();
++  const isClient = useIsClient();
+ 
+   const dateParam = searchParams.get("date");
+   const timeParam = searchParams.get("time");
+-  const emailParam = searchParams.get("email");
+-  const nameParam = searchParams.get("name");
+-
+   const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
+   const time = timeParam && isValidTime(timeParam) ? timeParam : null;
+-  const email = emailParam && EMAIL_REGEX.test(emailParam) ? emailParam : null;
+-  const name = nameParam && nameParam.trim().length >= 2 ? nameParam.trim() : null;
++
++  const draftRaw = useSyncExternalStore(
++    subscribeToDraft,
++    readDraftRaw,
++    getServerDraft,
++  );
++  const stored = useMemo(() => parseDraft(draftRaw), [draftRaw]);
++  const draft =
++    stored &&
++    stored.tenantId === tenant.id &&
++    stored.date === date &&
++    stored.time === time
++      ? stored
++      : null;
+ 
+   const [open, setOpen] = useState(true);
+   const [code, setCode] = useState("");
+@@ -42,15 +74,17 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+   const [resending, setResending] = useState(false);
+ 
+   useEffect(() => {
++    if (!isClient) return;
++
+     if (!date || !time) {
+       router.replace(`/${tenant.slug}/agendar`);
+       return;
+     }
+-    if (!email || !name) {
++    if (!draft) {
+       const params = new URLSearchParams({ date, time });
+       router.replace(`/${tenant.slug}/agendar/otp?${params.toString()}`);
+     }
+-  }, [date, time, email, name, router, tenant.slug]);
++  }, [isClient, date, time, draft, router, tenant.slug]);
+ 
+   useEffect(() => {
+     if (secondsLeft === 0) return;
+@@ -73,10 +107,10 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+   }
+ 
+   async function handleVerify() {
+-    if (!date || !time || !email || !name || verifying) return;
++    if (!date || !time || !draft || verifying) return;
+ 
+     if (code.length < CODE_LENGTH) {
+-      setError("Ingresa los 8 dígitos");
++      setError("Ingresa los 6 dígitos");
+       return;
+     }
+ 
+@@ -84,7 +118,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+     setError(undefined);
+ 
+     const { data, error: verifyError } = await supabase.auth.verifyOtp({
+-      email,
++      email: draft.email,
+       token: code,
+       type: "email",
+     });
+@@ -95,23 +129,18 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+       return;
+     }
+ 
+-    const startsAt = getSlotStart(date, time);
+-
+     const { error: updateError, count } = await supabase
+       .from("appointments")
+       .update(
+         {
+           patient_id: data.user.id,
+-          patient_name: name,
++          patient_name: draft.name,
+           status: "confirmed",
+           hold_expires_at: null,
+         },
+         { count: "exact" },
+       )
+-      .eq("tenant_id", tenant.id)
+-      .eq("starts_at", startsAt.toISOString())
+-      .eq("patient_email", email)
+-      .eq("status", "pending");
++      .eq("id", draft.holdId);
+ 
+     if (updateError) {
+       setError("No pudimos confirmar tu cita. Inténtalo de nuevo.");
+@@ -120,6 +149,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+     }
+ 
+     if (!count) {
++      clearDraft();
+       setError(
+         "Tu reserva expiró o el horario ya no está disponible. Elige otro horario.",
+       );
+@@ -127,19 +157,20 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+       return;
+     }
+ 
++    clearDraft();
+     setVerifying(false);
+     const params = new URLSearchParams({ date, time });
+     router.push(`/${tenant.slug}/agendar/confirmar?${params.toString()}`);
+   }
+ 
+   async function handleResend() {
+-    if (!email || secondsLeft > 0 || resending) return;
++    if (!draft || secondsLeft > 0 || resending) return;
+ 
+     setResending(true);
+     setError(undefined);
+ 
+     const { error: otpError } = await supabase.auth.signInWithOtp({
+-      email,
++      email: draft.email,
+       options: { shouldCreateUser: true },
+     });
+ 
+@@ -154,7 +185,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+     setSecondsLeft(RESEND_SECONDS);
+   }
+ 
+-  if (!date || !time || !email || !name) return null;
++  if (!date || !time || !draft) return null;
+ 
+   return (
+     <>
+@@ -166,7 +197,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+         open={open}
+         onClose={handleClose}
+         title="Ingresa el código de verificación"
+-        description={`Enviamos 8 dígitos a ${email}.`}
++        description={`Enviamos 6 dígitos a ${draft.email}.`}
+       >
+         <div className="flex flex-col gap-ds-6">
+           <OTPInput
+@@ -210,4 +241,4 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+       </BottomSheet>
+     </>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/src/lib/booking-draft.ts b/src/lib/booking-draft.ts
+new file mode 100644
+index 0000000..e9bf1c6
+--- /dev/null
++++ b/src/lib/booking-draft.ts
+@@ -0,0 +1,69 @@
++// Borrador de la reserva en curso. Vive en sessionStorage (solo esta pestaña)
++// para no pasar nombre ni correo por la URL.
++
++export type BookingDraft = {
++  holdId: string;
++  tenantId: string;
++  date: string;
++  time: string;
++  email: string;
++  name: string;
++  expiresAt: number;
++};
++
++const STORAGE_KEY = "citas:booking-draft";
++
++export function readDraftRaw(): string | null {
++  try {
++    return window.sessionStorage.getItem(STORAGE_KEY);
++  } catch {
++    return null;
++  }
++}
++
++export function parseDraft(raw: string | null): BookingDraft | null {
++  if (!raw) return null;
++
++  try {
++    const value = JSON.parse(raw) as Partial<BookingDraft>;
++
++    if (
++      typeof value.holdId === "string" &&
++      typeof value.tenantId === "string" &&
++      typeof value.date === "string" &&
++      typeof value.time === "string" &&
++      typeof value.email === "string" &&
++      typeof value.name === "string" &&
++      typeof value.expiresAt === "number"
++    ) {
++      return value as BookingDraft;
++    }
++  } catch {
++    return null;
++  }
++
++  return null;
++}
++
++/** Devuelve false si el navegador no permite guardar el borrador. */
++export function saveDraft(draft: BookingDraft): boolean {
++  try {
++    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++export function clearDraft() {
++  try {
++    window.sessionStorage.removeItem(STORAGE_KEY);
++  } catch {
++    // Sin almacenamiento disponible: no hay nada que limpiar.
++  }
++}
++
++export function subscribeToDraft(callback: () => void) {
++  window.addEventListener("storage", callback);
++  return () => window.removeEventListener("storage", callback);
++}
+diff --git a/supabase/migrations/20261017_hardening.sql b/supabase/migrations/20261017_hardening.sql
+new file mode 100644
+index 0000000..e11fd33
+--- /dev/null
++++ b/supabase/migrations/20261017_hardening.sql
+@@ -0,0 +1,156 @@
++-- Endurecimiento de seguridad y reservas (aplicado manualmente en el SQL Editor).
++-- Es re-ejecutable: usa "if exists" / "or replace".
++
++-- 0) Permisos que la app no usa
++revoke insert, update, delete on public.public_busy_slots from anon, authenticated;
++revoke truncate, references, trigger
++  on all tables in schema public from anon, authenticated;
++
++-- 1) Los motivos de bloqueo ya no son públicos (la vista no depende de esta política)
++drop policy if exists blocks_public_read on public.availability_blocks;
++
++-- 2) Vista pública de horarios ocupados
++create or replace view public.public_busy_slots as
++  select tenant_id, starts_at, ends_at
++  from public.appointments
++  where status in ('confirmed', 'attended')
++     or (status = 'pending' and hold_expires_at > now())
++  union all
++  select tenant_id, starts_at, ends_at
++  from public.availability_blocks;
++
++-- 3) Un solo horario confirmado por consultorio
++create unique index if not exists appointments_one_booked_per_slot
++  on public.appointments (tenant_id, starts_at)
++  where status in ('confirmed', 'attended');
++
++-- 4) Validaciones
++alter table public.appointments
++  drop constraint if exists appointments_range_check,
++  drop constraint if exists appointments_patient_name_len,
++  drop constraint if exists appointments_patient_email_len;
++
++alter table public.appointments
++  add constraint appointments_range_check check (ends_at > starts_at),
++  add constraint appointments_patient_name_len
++    check (patient_name is null or char_length(patient_name) <= 120),
++  add constraint appointments_patient_email_len
++    check (patient_email is null or char_length(patient_email) <= 254);
++
++alter table public.tenants
++  drop constraint if exists tenants_primary_color_hex,
++  drop constraint if exists tenants_primary_hover_hex,
++  drop constraint if exists tenants_photo_url_https,
++  drop constraint if exists tenants_slug_format;
++
++alter table public.tenants
++  add constraint tenants_primary_color_hex
++    check (primary_color is null or primary_color ~ '^#[0-9a-fA-F]{6}$'),
++  add constraint tenants_primary_hover_hex
++    check (primary_color_hover is null or primary_color_hover ~ '^#[0-9a-fA-F]{6}$'),
++  add constraint tenants_photo_url_https
++    check (photo_url is null or (photo_url ~ '^https://' and char_length(photo_url) <= 500)) not valid,
++  add constraint tenants_slug_format
++    check (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$');
++
++-- 5) Guardia de citas: valida holds, congela campos y evita solapamientos
++create or replace function public.appointments_guard()
++returns trigger
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  is_doctor boolean := false;
++begin
++  perform pg_advisory_xact_lock(hashtextextended(new.tenant_id::text, 0));
++
++  if tg_op = 'INSERT' then
++    if new.status <> 'pending' or new.patient_id is not null then
++      raise exception 'invalid_hold' using errcode = '23514';
++    end if;
++    if new.ends_at <> new.starts_at + interval '30 minutes' then
++      raise exception 'invalid_duration' using errcode = '23514';
++    end if;
++    if new.starts_at <= now() or new.starts_at > now() + interval '60 days' then
++      raise exception 'invalid_start' using errcode = '23514';
++    end if;
++  else
++    select exists (
++      select 1 from public.doctor_profiles
++      where user_id = auth.uid() and tenant_id = old.tenant_id
++    ) into is_doctor;
++
++    if not is_doctor and (
++      new.tenant_id <> old.tenant_id
++      or new.starts_at <> old.starts_at
++      or new.ends_at <> old.ends_at
++    ) then
++      raise exception 'frozen_fields' using errcode = '23514';
++    end if;
++  end if;
++
++  if new.status in ('pending', 'confirmed')
++     and (tg_op = 'INSERT' or old.status is distinct from new.status) then
++    if exists (
++      select 1 from public.appointments a
++      where a.tenant_id = new.tenant_id
++        and a.id <> new.id
++        and (
++          a.status in ('confirmed', 'attended')
++          or (a.status = 'pending' and a.hold_expires_at > now())
++        )
++        and tstzrange(a.starts_at, a.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) or exists (
++      select 1 from public.availability_blocks b
++      where b.tenant_id = new.tenant_id
++        and tstzrange(b.starts_at, b.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) then
++      raise exception 'slot_unavailable' using errcode = '23P01';
++    end if;
++  end if;
++
++  return new;
++end;
++$$;
++
++drop trigger if exists appointments_guard on public.appointments;
++create trigger appointments_guard
++  before insert or update on public.appointments
++  for each row execute function public.appointments_guard();
++
++-- 6) Un doctor no puede cambiar id ni slug de su consultorio
++create or replace function public.tenants_guard()
++returns trigger
++language plpgsql
++set search_path = public
++as $$
++begin
++  if auth.uid() is not null and (new.id <> old.id or new.slug <> old.slug) then
++    raise exception 'frozen_fields' using errcode = '23514';
++  end if;
++  return new;
++end;
++$$;
++
++drop trigger if exists tenants_guard on public.tenants;
++create trigger tenants_guard
++  before update on public.tenants
++  for each row execute function public.tenants_guard();
++
++-- 7) Confirmación del paciente: solo holds vigentes, sin dejar hold_expires_at
++drop policy if exists appointments_hold_confirm on public.appointments;
++create policy appointments_hold_confirm on public.appointments
++  for update to authenticated
++  using (
++    status = 'pending'
++    and hold_expires_at is not null
++    and hold_expires_at > now()
++    and patient_email = (auth.jwt() ->> 'email')
++  )
++  with check (
++    status = 'confirmed'
++    and hold_expires_at is null
++    and patient_id = auth.uid()
++    and patient_email = (auth.jwt() ->> 'email')
++  );

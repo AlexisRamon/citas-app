@@ -1,18 +1,41 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BottomSheet } from "@/components/ui/BottomSheet";
 import { Button } from "@/components/ui/Button";
 import { OTPInput } from "@/components/ui/OTPInput";
+import {
+  clearDraft,
+  parseDraft,
+  readDraftRaw,
+  subscribeToDraft,
+} from "@/lib/booking-draft";
 import { isValidIsoDate, isValidTime } from "@/lib/format-date";
 import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
 import { HorarioClient } from "../../horario/HorarioClient";
 
-const CODE_LENGTH = 8;
-const RESEND_SECONDS = 24;
-const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
+const CODE_LENGTH = 6;
+const RESEND_SECONDS = 60;
+
+const subscribeToNothing = () => () => {};
+const getServerDraft = () => null;
+
+function useIsClient() {
+  return useSyncExternalStore(
+    subscribeToNothing,
+    () => true,
+    () => false,
+  );
+}
 
 type OtpCodeEmailClientProps = {
   tenant: Tenant;
@@ -22,16 +45,26 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const supabase = createClient();
+  const isClient = useIsClient();
 
   const dateParam = searchParams.get("date");
   const timeParam = searchParams.get("time");
-  const emailParam = searchParams.get("email");
-  const nameParam = searchParams.get("name");
-
   const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
   const time = timeParam && isValidTime(timeParam) ? timeParam : null;
-  const email = emailParam && EMAIL_REGEX.test(emailParam) ? emailParam : null;
-  const name = nameParam && nameParam.trim().length >= 2 ? nameParam.trim() : null;
+
+  const draftRaw = useSyncExternalStore(
+    subscribeToDraft,
+    readDraftRaw,
+    getServerDraft,
+  );
+  const stored = useMemo(() => parseDraft(draftRaw), [draftRaw]);
+  const draft =
+    stored &&
+    stored.tenantId === tenant.id &&
+    stored.date === date &&
+    stored.time === time
+      ? stored
+      : null;
 
   const [open, setOpen] = useState(true);
   const [code, setCode] = useState("");
@@ -41,15 +74,17 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   const [resending, setResending] = useState(false);
 
   useEffect(() => {
+    if (!isClient) return;
+
     if (!date || !time) {
       router.replace(`/${tenant.slug}/agendar`);
       return;
     }
-    if (!email || !name) {
+    if (!draft) {
       const params = new URLSearchParams({ date, time });
       router.replace(`/${tenant.slug}/agendar/otp?${params.toString()}`);
     }
-  }, [date, time, email, name, router, tenant.slug]);
+  }, [isClient, date, time, draft, router, tenant.slug]);
 
   useEffect(() => {
     if (secondsLeft === 0) return;
@@ -72,10 +107,10 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
   }
 
   async function handleVerify() {
-    if (!date || !time || !email || !name || verifying) return;
+    if (!date || !time || !draft || verifying) return;
 
     if (code.length < CODE_LENGTH) {
-      setError("Ingresa los 8 dígitos");
+      setError("Ingresa los 6 dígitos");
       return;
     }
 
@@ -83,7 +118,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
     setError(undefined);
 
     const { data, error: verifyError } = await supabase.auth.verifyOtp({
-      email,
+      email: draft.email,
       token: code,
       type: "email",
     });
@@ -94,23 +129,18 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
       return;
     }
 
-    const startsAt = new Date(`${date}T${time}:00`);
-
     const { error: updateError, count } = await supabase
       .from("appointments")
       .update(
         {
           patient_id: data.user.id,
-          patient_name: name,
+          patient_name: draft.name,
           status: "confirmed",
           hold_expires_at: null,
         },
         { count: "exact" },
       )
-      .eq("tenant_id", tenant.id)
-      .eq("starts_at", startsAt.toISOString())
-      .eq("patient_email", email)
-      .eq("status", "pending");
+      .eq("id", draft.holdId);
 
     if (updateError) {
       setError("No pudimos confirmar tu cita. Inténtalo de nuevo.");
@@ -119,6 +149,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
     }
 
     if (!count) {
+      clearDraft();
       setError(
         "Tu reserva expiró o el horario ya no está disponible. Elige otro horario.",
       );
@@ -126,19 +157,20 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
       return;
     }
 
+    clearDraft();
     setVerifying(false);
     const params = new URLSearchParams({ date, time });
     router.push(`/${tenant.slug}/agendar/confirmar?${params.toString()}`);
   }
 
   async function handleResend() {
-    if (!email || secondsLeft > 0 || resending) return;
+    if (!draft || secondsLeft > 0 || resending) return;
 
     setResending(true);
     setError(undefined);
 
     const { error: otpError } = await supabase.auth.signInWithOtp({
-      email,
+      email: draft.email,
       options: { shouldCreateUser: true },
     });
 
@@ -153,7 +185,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
     setSecondsLeft(RESEND_SECONDS);
   }
 
-  if (!date || !time || !email || !name) return null;
+  if (!date || !time || !draft) return null;
 
   return (
     <>
@@ -165,7 +197,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
         open={open}
         onClose={handleClose}
         title="Ingresa el código de verificación"
-        description={`Enviamos 8 dígitos a ${email}.`}
+        description={`Enviamos 6 dígitos a ${draft.email}.`}
       >
         <div className="flex flex-col gap-ds-6">
           <OTPInput

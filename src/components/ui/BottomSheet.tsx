@@ -21,6 +21,11 @@ export function BottomSheet({
   const titleId = useId();
   const descriptionId = useId();
   const sheetRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
@@ -31,7 +36,7 @@ export function BottomSheet({
     sheetRef.current?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     }
     document.addEventListener("keydown", handleKeyDown);
 
@@ -40,7 +45,7 @@ export function BottomSheet({
       document.removeEventListener("keydown", handleKeyDown);
       previouslyFocused?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return (
     <>
