@@ -1,0 +1,620 @@
+diff --git a/src/app/[tenant]/agendar/confirmar/ConfirmarClient.tsx b/src/app/[tenant]/agendar/confirmar/ConfirmarClient.tsx
+index 740b47c..f8fcf8c 100644
+--- a/src/app/[tenant]/agendar/confirmar/ConfirmarClient.tsx
++++ b/src/app/[tenant]/agendar/confirmar/ConfirmarClient.tsx
+@@ -5,12 +5,15 @@ import { BadgeCheck, CalendarPlus } from "lucide-react";
+ import { Badge } from "@/components/ui/Badge";
+ import { BottomNav } from "@/components/ui/BottomNav";
+ import { Button } from "@/components/ui/Button";
++import { SLOT_MINUTES, getSlotStart } from "@/lib/booking";
++import { getNowMs } from "@/lib/clinic-time";
+ import {
+   formatLongDate,
+   formatTimeLabel,
+   isValidIsoDate,
+   isValidTime,
+ } from "@/lib/format-date";
++import { buildIcs, downloadIcs } from "@/lib/ics";
+ import type { Tenant } from "@/lib/tenant";
+ 
+ type ConfirmarClientProps = {
+@@ -33,6 +36,37 @@ export function ConfirmarClient({ tenant }: ConfirmarClientProps) {
+   const address =
+     tenant.address || (tenant.addressLines ?? []).join(", ");
+ 
++  function handleAddToCalendar() {
++    if (!date || !time) return;
++
++    const start = getSlotStart(date, time);
++    const end = new Date(start.getTime() + SLOT_MINUTES * 60 * 1000);
++
++    downloadIcs(
++      `cita-${tenant.slug}.ics`,
++      buildIcs({
++        uid: `${tenant.slug}-${date}-${time}@citas`,
++        stamp: new Date(getNowMs()),
++        start,
++        end,
++        summary: `Cita con ${tenant.name}`,
++        location: address || undefined,
++        description: tenant.phone ? `Teléfono: ${tenant.phone}` : undefined,
++      }),
++    );
++  }
++
++  function handleShare() {
++    if (!date || !time) return;
++
++    const text = `Tengo cita con ${tenant.name} el ${formatLongDate(date)} a las ${formatTimeLabel(time)}.${address ? ` ${address}.` : ""}`;
++    window.open(
++      `https://wa.me/?text=${encodeURIComponent(text)}`,
++      "_blank",
++      "noopener,noreferrer",
++    );
++  }
++
+   const details = [
+     { label: "Doctor", value: tenant.name },
+     { label: "Fecha y hora", value: dateTimeLabel },
+@@ -84,13 +118,18 @@ export function ConfirmarClient({ tenant }: ConfirmarClientProps) {
+ 
+         <section className="flex flex-col gap-ds-3">
+           <Button
+-            variant="primary"
++            variant={date && time ? "primary" : "disabled"}
+             icon={<CalendarPlus size={20} aria-hidden="true" />}
++            onClick={handleAddToCalendar}
+             className="w-full"
+           >
+             Añadir a mi calendario
+           </Button>
+-          <Button variant="secondary" className="w-full">
++          <Button
++            variant={date && time ? "secondary" : "disabled"}
++            onClick={handleShare}
++            className="w-full"
++          >
+             Compartir por WhatsApp
+           </Button>
+         </section>
+diff --git a/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx b/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
+index 93df582..0dedb35 100644
+--- a/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
++++ b/src/app/[tenant]/agendar/otp/OtpEmailClient.tsx
+@@ -115,9 +115,11 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
+ 
+       if (holdError) {
+         setError(
+-          holdError.code === SLOT_TAKEN_CODE
+-            ? "Ese horario ya no está disponible. Elige otro."
+-            : "No pudimos reservar el horario. Inténtalo de nuevo.",
++          holdError.message?.includes("agenda_closed")
++            ? "El consultorio cerró su agenda por ahora. Intenta más tarde."
++            : holdError.code === SLOT_TAKEN_CODE
++              ? "Ese horario ya no está disponible. Elige otro."
++              : "No pudimos reservar el horario. Inténtalo de nuevo.",
+         );
+         setSending(false);
+         return;
+diff --git a/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx b/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
+index 05b9132..6e00dbd 100644
+--- a/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
++++ b/src/app/[tenant]/agendar/otp/codigo/OtpCodeEmailClient.tsx
+@@ -24,7 +24,7 @@ import type { Tenant } from "@/lib/tenant";
+ import { HorarioClient } from "../../horario/HorarioClient";
+ 
+ const CODE_LENGTH = 6;
+-const RESEND_SECONDS = 24;
++const RESEND_SECONDS = 60;
+ 
+ const subscribeToNothing = () => () => {};
+ const getServerDraft = () => null;
+@@ -232,7 +232,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
+                 </button>
+               ) : (
+                 <p className="text-text-muted">
+-                  Reenviar código en 0:{secondsLeft.toString().padStart(2, "0")}
++                  Reenviar código en {Math.floor(secondsLeft / 60)}:{(secondsLeft % 60).toString().padStart(2, "0")}
+                 </p>
+               )}
+             </div>
+diff --git a/src/app/[tenant]/mi-cita/MiCitaClient.tsx b/src/app/[tenant]/mi-cita/MiCitaClient.tsx
+index c536e13..59e3f20 100644
+--- a/src/app/[tenant]/mi-cita/MiCitaClient.tsx
++++ b/src/app/[tenant]/mi-cita/MiCitaClient.tsx
+@@ -1,15 +1,88 @@
+ "use client";
+ 
++import { useEffect, useState } from "react";
+ import { CalendarPlus, CalendarX2 } from "lucide-react";
++import { Alert } from "@/components/ui/Alert";
++import { Badge } from "@/components/ui/Badge";
+ import { BottomNav } from "@/components/ui/BottomNav";
+ import { Button } from "@/components/ui/Button";
++import {
++  getClinicDateIso,
++  getClinicTime,
++  getNowMs,
++} from "@/lib/clinic-time";
++import { formatLongDate, formatTimeLabel } from "@/lib/format-date";
++import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ 
++type MyAppointment = {
++  id: string;
++  starts_at: string;
++  status: "confirmed" | "cancelled";
++};
++
++type LoadState =
++  | { kind: "loading" }
++  | { kind: "error" }
++  | { kind: "ready"; items: MyAppointment[] };
++
+ type MiCitaClientProps = {
+   tenant: Tenant;
+ };
+ 
+ export function MiCitaClient({ tenant }: MiCitaClientProps) {
++  const [state, setState] = useState<LoadState>({ kind: "loading" });
++
++  useEffect(() => {
++    let cancelled = false;
++
++    async function loadAppointments() {
++      try {
++        const supabase = createClient();
++        const {
++          data: { user },
++        } = await supabase.auth.getUser();
++
++        if (cancelled) return;
++
++        // Sin sesión de paciente no hay citas que mostrar.
++        if (!user) {
++          setState({ kind: "ready", items: [] });
++          return;
++        }
++
++        const { data, error } = await supabase
++          .from("appointments")
++          .select("id, starts_at, status")
++          .eq("tenant_id", tenant.id)
++          .eq("patient_id", user.id)
++          .in("status", ["confirmed", "cancelled"])
++          .gte("starts_at", new Date(getNowMs()).toISOString())
++          .order("starts_at", { ascending: true });
++
++        if (cancelled) return;
++
++        if (error || !data) {
++          setState({ kind: "error" });
++          return;
++        }
++
++        setState({ kind: "ready", items: data as MyAppointment[] });
++      } catch {
++        if (!cancelled) setState({ kind: "error" });
++      }
++    }
++
++    loadAppointments();
++
++    return () => {
++      cancelled = true;
++    };
++  }, [tenant.id]);
++
++  const address = tenant.address || (tenant.addressLines ?? []).join(", ");
++  const items = state.kind === "ready" ? state.items : [];
++
+   return (
+     <>
+       <main className="flex min-h-dvh flex-col gap-ds-6 bg-background px-ds-6 pb-[calc(64px+var(--spacing-ds-6)+env(safe-area-inset-bottom))] pt-ds-3">
+@@ -27,35 +100,89 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+ 
+         <h1 className="text-24 font-bold text-text">Mi cita</h1>
+ 
+-        <section
+-          aria-labelledby="mi-cita-vacio"
+-          className="flex flex-1 flex-col items-center justify-center gap-ds-3 text-center"
+-        >
++        {state.kind === "loading" ? (
+           <div
+-            aria-hidden="true"
+-            className="flex size-[88px] items-center justify-center rounded-full bg-disabled text-text-muted"
++            role="status"
++            aria-label="Cargando tus citas"
++            className="flex flex-col gap-ds-3"
+           >
+-            <CalendarX2 size={48} />
++            <div className="h-[104px] w-full rounded-md bg-surface-soft" />
++            <div className="h-[104px] w-full rounded-md bg-surface-soft" />
+           </div>
+-          <h2 id="mi-cita-vacio" className="text-20 font-bold text-text">
+-            No tienes citas próximas
+-          </h2>
+-          <p className="text-14 text-text-muted">
+-            Cuando agendes una, aparecerá aquí.
+-          </p>
+-        </section>
++        ) : state.kind === "error" ? (
++          <Alert
++            variant="danger"
++            title="No pudimos cargar tus citas"
++            description="Revisa tu conexión y recarga la página."
++          />
++        ) : items.length === 0 ? (
++          <section
++            aria-labelledby="mi-cita-vacio"
++            className="flex flex-1 flex-col items-center justify-center gap-ds-3 text-center"
++          >
++            <div
++              aria-hidden="true"
++              className="flex size-[88px] items-center justify-center rounded-full bg-disabled text-text-muted"
++            >
++              <CalendarX2 size={48} />
++            </div>
++            <h2 id="mi-cita-vacio" className="text-20 font-bold text-text">
++              No tienes citas próximas
++            </h2>
++            <p className="text-14 text-text-muted">
++              Cuando agendes una, aparecerá aquí.
++            </p>
++          </section>
++        ) : (
++          <ul className="flex flex-col gap-ds-3">
++            {items.map((item) => {
++              const [clock, ...periodParts] = formatTimeLabel(
++                getClinicTime(item.starts_at),
++              ).split(" ");
++              const period = periodParts.join(" ");
++
++              return (
++                <li key={item.id}>
++                  <article className="flex items-center gap-ds-4 rounded-md border border-border bg-surface p-ds-5">
++                    <time
++                      dateTime={item.starts_at}
++                      className="flex h-[64px] w-[58px] shrink-0 flex-col items-center justify-center rounded-sm bg-surface-soft font-bold text-primary"
++                    >
++                      <span className="text-16">{clock}</span>
++                      {period ? <span className="text-14">{period}</span> : null}
++                    </time>
++
++                    <div className="flex min-w-0 flex-1 flex-col gap-ds-1">
++                      <p className="text-16 font-bold text-text">
++                        {formatLongDate(getClinicDateIso(item.starts_at))}
++                      </p>
++                      <p className="text-14 text-text-muted">{tenant.name}</p>
++                      {address ? (
++                        <p className="text-14 text-text-muted">{address}</p>
++                      ) : null}
++                    </div>
++
++                    {item.status === "cancelled" ? (
++                      <Badge variant="cancelada" />
++                    ) : null}
++                  </article>
++                </li>
++              );
++            })}
++          </ul>
++        )}
+ 
+         <Button
+           href={`/${tenant.slug}/agendar`}
+           variant="primary"
+           icon={<CalendarPlus size={20} aria-hidden="true" />}
+-          className="w-full"
++          className="mt-auto w-full"
+         >
+-          Agendar cita
++          {items.length > 0 ? "Agendar otra cita" : "Agendar cita"}
+         </Button>
+       </main>
+ 
+       <BottomNav slug={tenant.slug} activeHref={`/${tenant.slug}/mi-cita`} />
+     </>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/doctor/(panel)/CerrarAgendaButton.tsx b/src/app/doctor/(panel)/CerrarAgendaButton.tsx
+new file mode 100644
+index 0000000..e3e89ab
+--- /dev/null
++++ b/src/app/doctor/(panel)/CerrarAgendaButton.tsx
+@@ -0,0 +1,74 @@
++"use client";
++
++import { useState } from "react";
++import { useRouter } from "next/navigation";
++import { LockKeyhole, LockKeyholeOpen } from "lucide-react";
++import { Alert } from "@/components/ui/Alert";
++import { Button } from "@/components/ui/Button";
++import { createClient } from "@/lib/supabase/client";
++
++type CerrarAgendaButtonProps = {
++  tenantId: string;
++  closed: boolean;
++};
++
++export function CerrarAgendaButton({ tenantId, closed }: CerrarAgendaButtonProps) {
++  const router = useRouter();
++  const supabase = createClient();
++
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState<string | undefined>(undefined);
++
++  async function handleToggle() {
++    if (saving) return;
++
++    if (
++      !closed &&
++      !window.confirm(
++        "¿Cerrar la agenda? Los pacientes no podrán reservar hasta que la vuelvas a abrir.",
++      )
++    ) {
++      return;
++    }
++
++    setSaving(true);
++    setError(undefined);
++
++    const { error: updateError, count } = await supabase
++      .from("tenants")
++      .update(
++        { current_status: closed ? "abierto" : "agenda-cerrada" },
++        { count: "exact" },
++      )
++      .eq("id", tenantId);
++
++    if (updateError || !count) {
++      setError("No pudimos actualizar la agenda. Inténtalo de nuevo.");
++      setSaving(false);
++      return;
++    }
++
++    setSaving(false);
++    router.refresh();
++  }
++
++  return (
++    <div className="fixed bottom-ds-7 right-ds-7 z-30 flex w-[208px] flex-col gap-ds-3">
++      {error ? <Alert variant="danger" title={error} /> : null}
++      <Button
++        variant={saving ? "disabled" : "primary"}
++        icon={
++          closed ? (
++            <LockKeyholeOpen size={20} aria-hidden="true" />
++          ) : (
++            <LockKeyhole size={20} aria-hidden="true" />
++          )
++        }
++        onClick={handleToggle}
++        className="w-full"
++      >
++        {saving ? "Guardando…" : closed ? "Abrir agenda" : "Cerrar agenda"}
++      </Button>
++    </div>
++  );
++}
+diff --git a/src/app/doctor/(panel)/page.tsx b/src/app/doctor/(panel)/page.tsx
+index b0d023c..41d641e 100644
+--- a/src/app/doctor/(panel)/page.tsx
++++ b/src/app/doctor/(panel)/page.tsx
+@@ -1,10 +1,9 @@
+ import { redirect } from "next/navigation";
+-import { CalendarX2, LockKeyhole } from "lucide-react";
++import { CalendarX2 } from "lucide-react";
+ import { Alert } from "@/components/ui/Alert";
+ import { AppointmentCard } from "@/components/ui/AppointmentCard";
+ import type { AppointmentStatus } from "@/components/ui/AppointmentCard";
+ import { Badge } from "@/components/ui/Badge";
+-import { Button } from "@/components/ui/Button";
+ import { PageHeader } from "@/components/ui/PageHeader";
+ import {
+   CLINIC_TIME_ZONE,
+@@ -13,6 +12,7 @@ import {
+ } from "@/lib/clinic-time";
+ import { formatLongDate } from "@/lib/format-date";
+ import { createClient } from "@/lib/supabase/server";
++import { CerrarAgendaButton } from "./CerrarAgendaButton";
+ 
+ const VISIBLE_STATUSES: AppointmentStatus[] = ["confirmed", "attended"];
+ 
+@@ -37,12 +37,17 @@ export default async function DoctorDashboardPage() {
+ 
+   const { data: profile } = await supabase
+     .from("doctor_profiles")
+-    .select("tenant_id")
++    .select("tenant_id, tenants(current_status)")
+     .eq("user_id", user.id)
+-    .maybeSingle<{ tenant_id: string }>();
++    .maybeSingle<{
++      tenant_id: string;
++      tenants: { current_status: string | null } | null;
++    }>();
+ 
+   if (!profile) redirect("/doctor/login?error=sin-acceso");
+ 
++  const agendaCerrada = profile.tenants?.current_status === "agenda-cerrada";
++
+   const todayIso = getClinicTodayIso();
+   const dayStart = zonedDateTimeToUtc(todayIso, "00:00:00");
+   const dayEnd = zonedDateTimeToUtc(todayIso, "23:59:59");
+@@ -73,6 +78,14 @@ export default async function DoctorDashboardPage() {
+           actions={<Badge variant="verificado" />}
+         />
+ 
++        {agendaCerrada ? (
++          <Alert
++            variant="warning"
++            title="Tu agenda está cerrada"
++            description="Los pacientes no pueden reservar. Pulsa «Abrir agenda» para reanudar."
++          />
++        ) : null}
++
+         {error ? (
+           <Alert
+             variant="danger"
+@@ -128,13 +141,7 @@ export default async function DoctorDashboardPage() {
+         )}
+       </div>
+ 
+-      <Button
+-        variant="primary"
+-        icon={<LockKeyhole size={20} aria-hidden="true" />}
+-        className="fixed bottom-ds-7 right-ds-7 z-30 w-[208px]"
+-      >
+-        Cerrar agenda
+-      </Button>
++      <CerrarAgendaButton tenantId={profile.tenant_id} closed={agendaCerrada} />
+     </>
+   );
+ }
+diff --git a/src/lib/ics.ts b/src/lib/ics.ts
+new file mode 100644
+index 0000000..c55fa3b
+--- /dev/null
++++ b/src/lib/ics.ts
+@@ -0,0 +1,65 @@
++type IcsEvent = {
++  uid: string;
++  start: Date;
++  end: Date;
++  stamp: Date;
++  summary: string;
++  location?: string;
++  description?: string;
++};
++
++function formatUtc(date: Date) {
++  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
++}
++
++function escapeText(value: string) {
++  return value
++    .replace(/\\/g, "\\\\")
++    .replace(/;/g, "\\;")
++    .replace(/,/g, "\\,")
++    .replace(/\r?\n/g, "\\n");
++}
++
++export function buildIcs(event: IcsEvent): string {
++  const lines = [
++    "BEGIN:VCALENDAR",
++    "VERSION:2.0",
++    "PRODID:-//citas-app//ES",
++    "CALSCALE:GREGORIAN",
++    "METHOD:PUBLISH",
++    "BEGIN:VEVENT",
++    `UID:${event.uid}`,
++    `DTSTAMP:${formatUtc(event.stamp)}`,
++    `DTSTART:${formatUtc(event.start)}`,
++    `DTEND:${formatUtc(event.end)}`,
++    `SUMMARY:${escapeText(event.summary)}`,
++  ];
++
++  if (event.location) lines.push(`LOCATION:${escapeText(event.location)}`);
++  if (event.description) {
++    lines.push(`DESCRIPTION:${escapeText(event.description)}`);
++  }
++
++  lines.push(
++    "BEGIN:VALARM",
++    "TRIGGER:-PT1H",
++    "ACTION:DISPLAY",
++    "DESCRIPTION:Recordatorio de cita",
++    "END:VALARM",
++    "END:VEVENT",
++    "END:VCALENDAR",
++  );
++
++  return `${lines.join("\r\n")}\r\n`;
++}
++
++export function downloadIcs(filename: string, content: string) {
++  const url = URL.createObjectURL(
++    new Blob([content], { type: "text/calendar;charset=utf-8" }),
++  );
++  const link = document.createElement("a");
++  link.href = url;
++  link.download = filename;
++  link.click();
++  URL.revokeObjectURL(url);
++}
+diff --git a/supabase/migrations/20261018_agenda_cerrada.sql b/supabase/migrations/20261018_agenda_cerrada.sql
+new file mode 100644
+index 0000000..84162a0
+--- /dev/null
++++ b/supabase/migrations/20261018_agenda_cerrada.sql
+@@ -0,0 +1,68 @@
++-- Con la agenda cerrada (tenants.current_status = 'agenda-cerrada') no se crean holds nuevos.
++-- La app muestra el mensaje a partir de 'agenda_closed'. Trigger appointments_guard ya existe.
++
++create or replace function public.appointments_guard()
++returns trigger
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  is_doctor boolean := false;
++begin
++  perform pg_advisory_xact_lock(hashtextextended(new.tenant_id::text, 0));
++
++  if tg_op = 'INSERT' then
++    if exists (
++      select 1 from public.tenants t
++      where t.id = new.tenant_id and t.current_status = 'agenda-cerrada'
++    ) then
++      raise exception 'agenda_closed' using errcode = '23514';
++    end if;
++    if new.status <> 'pending' or new.patient_id is not null then
++      raise exception 'invalid_hold' using errcode = '23514';
++    end if;
++    if new.ends_at <> new.starts_at + interval '30 minutes' then
++      raise exception 'invalid_duration' using errcode = '23514';
++    end if;
++    if new.starts_at <= now() or new.starts_at > now() + interval '60 days' then
++      raise exception 'invalid_start' using errcode = '23514';
++    end if;
++  else
++    select exists (
++      select 1 from public.doctor_profiles
++      where user_id = auth.uid() and tenant_id = old.tenant_id
++    ) into is_doctor;
++
++    if not is_doctor and (
++      new.tenant_id <> old.tenant_id
++      or new.starts_at <> old.starts_at
++      or new.ends_at <> old.ends_at
++    ) then
++      raise exception 'frozen_fields' using errcode = '23514';
++    end if;
++  end if;
++
++  if new.status in ('pending', 'confirmed')
++     and (tg_op = 'INSERT' or old.status is distinct from new.status) then
++    if exists (
++      select 1 from public.appointments a
++      where a.tenant_id = new.tenant_id
++        and a.id <> new.id
++        and (
++          a.status in ('confirmed', 'attended')
++          or (a.status = 'pending' and a.hold_expires_at > now())
++        )
++        and tstzrange(a.starts_at, a.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) or exists (
++      select 1 from public.availability_blocks b
++      where b.tenant_id = new.tenant_id
++        and tstzrange(b.starts_at, b.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) then
++      raise exception 'slot_unavailable' using errcode = '23P01';
++    end if;
++  end if;
++
++  return new;
++end;
++$$;

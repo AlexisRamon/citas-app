@@ -1,10 +1,9 @@
 import { redirect } from "next/navigation";
-import { CalendarX2, LockKeyhole } from "lucide-react";
+import { CalendarX2 } from "lucide-react";
 import { Alert } from "@/components/ui/Alert";
 import { AppointmentCard } from "@/components/ui/AppointmentCard";
 import type { AppointmentStatus } from "@/components/ui/AppointmentCard";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import {
   CLINIC_TIME_ZONE,
@@ -13,6 +12,7 @@ import {
 } from "@/lib/clinic-time";
 import { formatLongDate } from "@/lib/format-date";
 import { createClient } from "@/lib/supabase/server";
+import { CerrarAgendaButton } from "./CerrarAgendaButton";
 
 const VISIBLE_STATUSES: AppointmentStatus[] = ["confirmed", "attended"];
 
@@ -37,11 +37,16 @@ export default async function DoctorDashboardPage() {
 
   const { data: profile } = await supabase
     .from("doctor_profiles")
-    .select("tenant_id")
+    .select("tenant_id, tenants(current_status)")
     .eq("user_id", user.id)
-    .maybeSingle<{ tenant_id: string }>();
+    .maybeSingle<{
+      tenant_id: string;
+      tenants: { current_status: string | null } | null;
+    }>();
 
   if (!profile) redirect("/doctor/login?error=sin-acceso");
+
+  const agendaCerrada = profile.tenants?.current_status === "agenda-cerrada";
 
   const todayIso = getClinicTodayIso();
   const dayStart = zonedDateTimeToUtc(todayIso, "00:00:00");
@@ -72,6 +77,14 @@ export default async function DoctorDashboardPage() {
           subtitle="Tu agenda del día, en un solo lugar."
           actions={<Badge variant="verificado" />}
         />
+
+        {agendaCerrada ? (
+          <Alert
+            variant="warning"
+            title="Tu agenda está cerrada"
+            description="Los pacientes no pueden reservar. Pulsa «Abrir agenda» para reanudar."
+          />
+        ) : null}
 
         {error ? (
           <Alert
@@ -128,13 +141,7 @@ export default async function DoctorDashboardPage() {
         )}
       </div>
 
-      <Button
-        variant="primary"
-        icon={<LockKeyhole size={20} aria-hidden="true" />}
-        className="fixed bottom-ds-7 right-ds-7 z-30 w-[208px]"
-      >
-        Cerrar agenda
-      </Button>
+      <CerrarAgendaButton tenantId={profile.tenant_id} closed={agendaCerrada} />
     </>
   );
 }

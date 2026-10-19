@@ -5,12 +5,15 @@ import { BadgeCheck, CalendarPlus } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { Button } from "@/components/ui/Button";
+import { SLOT_MINUTES, getSlotStart } from "@/lib/booking";
+import { getNowMs } from "@/lib/clinic-time";
 import {
   formatLongDate,
   formatTimeLabel,
   isValidIsoDate,
   isValidTime,
 } from "@/lib/format-date";
+import { buildIcs, downloadIcs } from "@/lib/ics";
 import type { Tenant } from "@/lib/tenant";
 
 type ConfirmarClientProps = {
@@ -32,6 +35,37 @@ export function ConfirmarClient({ tenant }: ConfirmarClientProps) {
 
   const address =
     tenant.address || (tenant.addressLines ?? []).join(", ");
+
+  function handleAddToCalendar() {
+    if (!date || !time) return;
+
+    const start = getSlotStart(date, time);
+    const end = new Date(start.getTime() + SLOT_MINUTES * 60 * 1000);
+
+    downloadIcs(
+      `cita-${tenant.slug}.ics`,
+      buildIcs({
+        uid: `${tenant.slug}-${date}-${time}@citas`,
+        stamp: new Date(getNowMs()),
+        start,
+        end,
+        summary: `Cita con ${tenant.name}`,
+        location: address || undefined,
+        description: tenant.phone ? `Teléfono: ${tenant.phone}` : undefined,
+      }),
+    );
+  }
+
+  function handleShare() {
+    if (!date || !time) return;
+
+    const text = `Tengo cita con ${tenant.name} el ${formatLongDate(date)} a las ${formatTimeLabel(time)}.${address ? ` ${address}.` : ""}`;
+    window.open(
+      `https://wa.me/?text=${encodeURIComponent(text)}`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }
 
   const details = [
     { label: "Doctor", value: tenant.name },
@@ -84,13 +118,18 @@ export function ConfirmarClient({ tenant }: ConfirmarClientProps) {
 
         <section className="flex flex-col gap-ds-3">
           <Button
-            variant="primary"
+            variant={date && time ? "primary" : "disabled"}
             icon={<CalendarPlus size={20} aria-hidden="true" />}
+            onClick={handleAddToCalendar}
             className="w-full"
           >
             Añadir a mi calendario
           </Button>
-          <Button variant="secondary" className="w-full">
+          <Button
+            variant={date && time ? "secondary" : "disabled"}
+            onClick={handleShare}
+            className="w-full"
+          >
             Compartir por WhatsApp
           </Button>
         </section>

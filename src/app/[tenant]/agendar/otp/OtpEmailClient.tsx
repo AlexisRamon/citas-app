@@ -115,9 +115,11 @@ export function OtpEmailClient({ tenant }: OtpEmailClientProps) {
 
       if (holdError) {
         setError(
-          holdError.code === SLOT_TAKEN_CODE
-            ? "Ese horario ya no está disponible. Elige otro."
-            : "No pudimos reservar el horario. Inténtalo de nuevo.",
+          holdError.message?.includes("agenda_closed")
+            ? "El consultorio cerró su agenda por ahora. Intenta más tarde."
+            : holdError.code === SLOT_TAKEN_CODE
+              ? "Ese horario ya no está disponible. Elige otro."
+              : "No pudimos reservar el horario. Inténtalo de nuevo.",
         );
         setSending(false);
         return;

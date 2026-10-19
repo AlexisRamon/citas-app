@@ -1,0 +1,437 @@
+diff --git a/src/app/[tenant]/mi-cita/MiCitaClient.tsx b/src/app/[tenant]/mi-cita/MiCitaClient.tsx
+index 59e3f20..d379cda 100644
+--- a/src/app/[tenant]/mi-cita/MiCitaClient.tsx
++++ b/src/app/[tenant]/mi-cita/MiCitaClient.tsx
+@@ -14,6 +14,7 @@ import {
+ import { formatLongDate, formatTimeLabel } from "@/lib/format-date";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
++import { MiCitaLogin } from "./MiCitaLogin";
+ 
+ type MyAppointment = {
+   id: string;
+@@ -23,8 +24,9 @@ type MyAppointment = {
+ 
+ type LoadState =
+   | { kind: "loading" }
++  | { kind: "anon" }
+   | { kind: "error" }
+-  | { kind: "ready"; items: MyAppointment[] };
++  | { kind: "ready"; email: string | null; items: MyAppointment[] };
+ 
+ type MiCitaClientProps = {
+   tenant: Tenant;
+@@ -32,6 +34,10 @@ type MiCitaClientProps = {
+ 
+ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+   const [state, setState] = useState<LoadState>({ kind: "loading" });
++  const [reloadKey, setReloadKey] = useState(0);
++  const [signOutError, setSignOutError] = useState<string | undefined>(
++    undefined,
++  );
+ 
+   useEffect(() => {
+     let cancelled = false;
+@@ -45,12 +51,14 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+ 
+         if (cancelled) return;
+ 
+-        // Sin sesión de paciente no hay citas que mostrar.
++        // Sin sesión: pedir inicio de sesión con el correo de la reserva.
+         if (!user) {
+-          setState({ kind: "ready", items: [] });
++          setState({ kind: "anon" });
+           return;
+         }
+ 
++        // La RLS (patient_id = auth.uid()) garantiza que solo se vean las
++        // citas de la cuenta que verificó ese correo.
+         const { data, error } = await supabase
+           .from("appointments")
+           .select("id, starts_at, status")
+@@ -67,7 +75,11 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+           return;
+         }
+ 
+-        setState({ kind: "ready", items: data as MyAppointment[] });
++        setState({
++          kind: "ready",
++          email: user.email ?? null,
++          items: data as MyAppointment[],
++        });
+       } catch {
+         if (!cancelled) setState({ kind: "error" });
+       }
+@@ -78,7 +90,26 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+     return () => {
+       cancelled = true;
+     };
+-  }, [tenant.id]);
++  }, [tenant.id, reloadKey]);
++
++  function handleLoggedIn() {
++    setState({ kind: "loading" });
++    setReloadKey((current) => current + 1);
++  }
++
++  async function handleSignOut() {
++    setSignOutError(undefined);
++
++    const supabase = createClient();
++    const { error } = await supabase.auth.signOut();
++
++    if (error) {
++      setSignOutError("No pudimos cerrar la sesión. Inténtalo de nuevo.");
++      return;
++    }
++
++    setState({ kind: "anon" });
++  }
+ 
+   const address = tenant.address || (tenant.addressLines ?? []).join(", ");
+   const items = state.kind === "ready" ? state.items : [];
+@@ -98,7 +129,26 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+           <p className="text-14 font-bold text-text">{tenant.name}</p>
+         </header>
+ 
+-        <h1 className="text-24 font-bold text-text">Mi cita</h1>
++        <div className="flex flex-col gap-ds-1">
++          <h1 className="text-24 font-bold text-text">Mi cita</h1>
++          {state.kind === "ready" && state.email ? (
++            <div className="flex flex-wrap items-center gap-x-ds-3 text-14 text-text-muted">
++              <p>Sesión: {state.email}</p>
++              <button
++                type="button"
++                onClick={handleSignOut}
++                className="min-h-[44px] font-bold text-primary underline"
++              >
++                Cerrar sesión
++              </button>
++            </div>
++          ) : null}
++          {signOutError ? (
++            <p role="alert" className="text-14 text-danger">
++              {signOutError}
++            </p>
++          ) : null}
++        </div>
+ 
+         {state.kind === "loading" ? (
+           <div
+@@ -109,6 +159,8 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+             <div className="h-[104px] w-full rounded-md bg-surface-soft" />
+             <div className="h-[104px] w-full rounded-md bg-surface-soft" />
+           </div>
++        ) : state.kind === "anon" ? (
++          <MiCitaLogin onLoggedIn={handleLoggedIn} />
+         ) : state.kind === "error" ? (
+           <Alert
+             variant="danger"
+diff --git a/src/app/[tenant]/mi-cita/MiCitaLogin.tsx b/src/app/[tenant]/mi-cita/MiCitaLogin.tsx
+new file mode 100644
+index 0000000..db1a96b
+--- /dev/null
++++ b/src/app/[tenant]/mi-cita/MiCitaLogin.tsx
+@@ -0,0 +1,215 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { LogIn, Mail } from "lucide-react";
++import { Button } from "@/components/ui/Button";
++import { Input } from "@/components/ui/Input";
++import { OTPInput } from "@/components/ui/OTPInput";
++import { OTP_LENGTH, RESEND_SECONDS } from "@/lib/auth-config";
++import { createClient } from "@/lib/supabase/client";
++
++const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
++
++type MiCitaLoginProps = {
++  onLoggedIn: () => void;
++};
++
++export function MiCitaLogin({ onLoggedIn }: MiCitaLoginProps) {
++  const supabase = createClient();
++
++  const [step, setStep] = useState<"email" | "code">("email");
++  const [email, setEmail] = useState("");
++  const [code, setCode] = useState("");
++  const [error, setError] = useState<string | undefined>(undefined);
++  const [busy, setBusy] = useState(false);
++  const [secondsLeft, setSecondsLeft] = useState(0);
++
++  useEffect(() => {
++    if (secondsLeft === 0) return;
++
++    const interval = setInterval(() => {
++      setSecondsLeft((current) => Math.max(current - 1, 0));
++    }, 1000);
++
++    return () => clearInterval(interval);
++  }, [secondsLeft]);
++
++  // Solo enviamos código a correos que ya existen (shouldCreateUser: false).
++  // Si el correo nunca ha agendado, respondemos igual para no revelar qué
++  // correos están registrados; la verificación fallará con "código incorrecto".
++  async function sendCode(target: string) {
++    const { error: otpError } = await supabase.auth.signInWithOtp({
++      email: target,
++      options: { shouldCreateUser: false },
++    });
++
++    if (!otpError) return true;
++    return otpError.code === "otp_disabled" || /not allowed/i.test(otpError.message);
++  }
++
++  async function handleSendEmail() {
++    if (busy) return;
++
++    const normalized = email.trim().toLowerCase();
++    if (!EMAIL_REGEX.test(normalized)) {
++      setError("Ingresa un correo válido");
++      return;
++    }
++
++    setBusy(true);
++    setError(undefined);
++
++    const ok = await sendCode(normalized);
++    setBusy(false);
++
++    if (!ok) {
++      setError("No pudimos enviar el código. Inténtalo de nuevo.");
++      return;
++    }
++
++    setEmail(normalized);
++    setCode("");
++    setSecondsLeft(RESEND_SECONDS);
++    setStep("code");
++  }
++
++  async function handleVerify() {
++    if (busy) return;
++
++    if (code.length < OTP_LENGTH) {
++      setError(`Ingresa los ${OTP_LENGTH} dígitos`);
++      return;
++    }
++
++    setBusy(true);
++    setError(undefined);
++
++    const { data, error: verifyError } = await supabase.auth.verifyOtp({
++      email,
++      token: code,
++      type: "email",
++    });
++
++    setBusy(false);
++
++    if (verifyError || !data.user) {
++      setError("Código incorrecto o vencido. Inténtalo de nuevo.");
++      return;
++    }
++
++    onLoggedIn();
++  }
++
++  async function handleResend() {
++    if (busy || secondsLeft > 0) return;
++
++    setBusy(true);
++    setError(undefined);
++
++    const ok = await sendCode(email);
++    setBusy(false);
++
++    if (!ok) {
++      setError("No pudimos reenviar el código. Inténtalo de nuevo.");
++      return;
++    }
++
++    setCode("");
++    setSecondsLeft(RESEND_SECONDS);
++  }
++
++  return (
++    <section
++      aria-labelledby="mi-cita-login"
++      className="flex flex-col gap-ds-5 rounded-lg border border-border bg-surface p-ds-5"
++    >
++      <div className="flex flex-col gap-ds-2">
++        <h2 id="mi-cita-login" className="text-20 font-bold text-text">
++          Inicia sesión para ver tus citas agendadas
++        </h2>
++        <p className="text-14 text-text-muted">
++          Usa el mismo correo con el que agendaste. Te enviaremos un código de
++          verificación.
++        </p>
++      </div>
++
++      {step === "email" ? (
++        <>
++          <Input
++            type="email"
++            inputMode="email"
++            autoComplete="email"
++            label="Correo electrónico"
++            placeholder="tu@correo.com"
++            value={email}
++            onChange={(value) => {
++              setEmail(value);
++              if (error) setError(undefined);
++            }}
++            error={error}
++          />
++          <Button
++            variant={busy ? "disabled" : "primary"}
++            icon={<Mail size={20} aria-hidden="true" />}
++            onClick={handleSendEmail}
++            className="w-full"
++          >
++            {busy ? "Enviando…" : "Enviar código"}
++          </Button>
++        </>
++      ) : (
++        <>
++          <p className="text-14 text-text">
++            Si ese correo tiene citas, enviamos {OTP_LENGTH} dígitos a{" "}
++            <span className="font-bold">{email}</span>.
++          </p>
++          <OTPInput
++            length={OTP_LENGTH}
++            value={code}
++            onChange={(value) => {
++              setCode(value);
++              if (error) setError(undefined);
++            }}
++            error={error}
++          />
++          <Button
++            variant={busy ? "disabled" : "primary"}
++            icon={<LogIn size={20} aria-hidden="true" />}
++            onClick={handleVerify}
++            className="w-full"
++          >
++            {busy ? "Verificando…" : "Verificar e iniciar sesión"}
++          </Button>
++
++          <div className="flex flex-col items-center gap-ds-1 text-14">
++            {secondsLeft === 0 ? (
++              <button
++                type="button"
++                onClick={handleResend}
++                disabled={busy}
++                className="min-h-[44px] text-primary underline"
++              >
++                Reenviar código
++              </button>
++            ) : (
++              <p className="flex min-h-[44px] items-center text-text-muted">
++                Reenviar código en {secondsLeft} s
++              </p>
++            )}
++            <button
++              type="button"
++              onClick={() => {
++                setStep("email");
++                setCode("");
++                setError(undefined);
++              }}
++              className="min-h-[44px] text-primary underline"
++            >
++              Cambiar correo
++            </button>
++          </div>
++        </>
++      )}
++    </section>
++  );
++}
+diff --git a/src/lib/auth-config.ts b/src/lib/auth-config.ts
+new file mode 100644
+index 0000000..8d95278
+--- /dev/null
++++ b/src/lib/auth-config.ts
+@@ -0,0 +1,5 @@
++// Debe coincidir con Supabase → Authentication → Email → "Email OTP length".
++export const OTP_LENGTH = 8;
++
++// Segundos antes de poder pedir otro código.
++export const RESEND_SECONDS = 24;
+diff --git a/supabase/scripts/clean-test-data.sql b/supabase/scripts/clean-test-data.sql
+new file mode 100644
+index 0000000..de73ba0
+--- /dev/null
++++ b/supabase/scripts/clean-test-data.sql
+@@ -0,0 +1,34 @@
++-- Limpia los datos de prueba: borra TODAS las citas y TODOS los usuarios que no son doctores.
++-- Conserva: tenants, doctor_profiles, availability_blocks y el usuario del doctor.
++--
++-- 1) Vista previa (ejecútala sola primero):
++select count(*) as citas_a_borrar from public.appointments;
++
++select id, email, created_at
++from auth.users
++where id not in (select user_id from public.doctor_profiles)
++order by created_at;
++
++-- 2) Borrado (ejecuta este bloque completo):
++begin;
++
++do $$
++begin
++  if (select count(*) from public.doctor_profiles) = 0 then
++    raise exception 'No hay filas en doctor_profiles: abortando para no borrar al doctor';
++  end if;
++end $$;
++
++delete from public.appointments;
++
++delete from auth.users
++where id not in (select user_id from public.doctor_profiles);
++
++commit;
++
++-- 3) Comprobación:
++select
++  (select count(*) from public.appointments)    as citas,
++  (select count(*) from auth.users)             as usuarios,
++  (select count(*) from public.doctor_profiles) as doctores,
++  (select count(*) from public.tenants)         as tenants;
+diff --git a/supabase/templates/confirm-signup.html b/supabase/templates/confirm-signup.html
+new file mode 100644
+index 0000000..72e0c62
+--- /dev/null
++++ b/supabase/templates/confirm-signup.html
+@@ -0,0 +1,12 @@
++<div style="font-family: Arial, Helvetica, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; color: #243b36;">
++  <h2 style="margin: 0 0 12px; font-size: 20px;">Tu código de verificación</h2>
++  <p style="margin: 0 0 16px; font-size: 14px; color: #65736e;">
++    Usa este código para verificar tu correo y continuar con tu cita:
++  </p>
++  <p style="margin: 0 0 16px; font-size: 32px; font-weight: bold; letter-spacing: 6px;">
++    {{ .Token }}
++  </p>
++  <p style="margin: 0; font-size: 12px; color: #65736e;">
++    El código vence en pocos minutos. Si no lo pediste, ignora este correo.
++  </p>
++</div>
+diff --git a/supabase/templates/magic-link.html b/supabase/templates/magic-link.html
+new file mode 100644
+index 0000000..72e0c62
+--- /dev/null
++++ b/supabase/templates/magic-link.html
+@@ -0,0 +1,12 @@
++<div style="font-family: Arial, Helvetica, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; color: #243b36;">
++  <h2 style="margin: 0 0 12px; font-size: 20px;">Tu código de verificación</h2>
++  <p style="margin: 0 0 16px; font-size: 14px; color: #65736e;">
++    Usa este código para verificar tu correo y continuar con tu cita:
++  </p>
++  <p style="margin: 0 0 16px; font-size: 32px; font-weight: bold; letter-spacing: 6px;">
++    {{ .Token }}
++  </p>
++  <p style="margin: 0; font-size: 12px; color: #65736e;">
++    El código vence en pocos minutos. Si no lo pediste, ignora este correo.
++  </p>
++</div>

@@ -23,7 +23,7 @@ import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
 import { HorarioClient } from "../../horario/HorarioClient";
 
-const CODE_LENGTH = 6;
+const CODE_LENGTH = 8;
 const RESEND_SECONDS = 60;
 
 const subscribeToNothing = () => () => {};
@@ -110,7 +110,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
     if (!date || !time || !draft || verifying) return;
 
     if (code.length < CODE_LENGTH) {
-      setError("Ingresa los 6 dígitos");
+      setError("Ingresa los 8 dígitos");
       return;
     }
 
@@ -197,7 +197,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
         open={open}
         onClose={handleClose}
         title="Ingresa el código de verificación"
-        description={`Enviamos 6 dígitos a ${draft.email}.`}
+        description={`Enviamos 8 dígitos a ${draft.email}.`}
       >
         <div className="flex flex-col gap-ds-6">
           <OTPInput
@@ -232,7 +232,7 @@ export function OtpCodeEmailClient({ tenant }: OtpCodeEmailClientProps) {
                 </button>
               ) : (
                 <p className="text-text-muted">
-                  Reenviar código en 0:{secondsLeft.toString().padStart(2, "0")}
+                  Reenviar código en {Math.floor(secondsLeft / 60)}:{(secondsLeft % 60).toString().padStart(2, "0")}
                 </p>
               )}
             </div>

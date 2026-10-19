@@ -206,7 +206,7 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
   }
 
   const continueHref = activeSlot
-    ? `/${tenant.slug}/agendar/otp?${new URLSearchParams({
+    ? `/${tenant.slug}/agendar/resumen?${new URLSearchParams({
         date,
         time: activeSlot,
       }).toString()}`
