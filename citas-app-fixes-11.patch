@@ -1,0 +1,816 @@
+diff --git a/src/app/[tenant]/agendar/resumen/actions.ts b/src/app/[tenant]/agendar/resumen/actions.ts
+index db17a1f..528120a 100644
+--- a/src/app/[tenant]/agendar/resumen/actions.ts
++++ b/src/app/[tenant]/agendar/resumen/actions.ts
+@@ -1,7 +1,11 @@
+ "use server";
+ 
+ import { SLOT_MINUTES, getSlotStart } from "@/lib/booking";
+-import { buildConfirmationEmail } from "@/lib/booking-email";
++import {
++  buildClinicNewBookingEmail,
++  buildConfirmationEmail,
++} from "@/lib/booking-email";
++import { getClinicEmail } from "@/lib/clinic-notify";
+ import { getClinicDateIso, getClinicTime, getNowMs } from "@/lib/clinic-time";
+ import { sendEmail } from "@/lib/email";
+ import {
+@@ -83,8 +87,10 @@ export async function bookAppointment(input: BookingInput): Promise<BookingResul
+   const startsAt = getSlotStart(input.date, input.time);
+   const endsAt = new Date(startsAt.getTime() + SLOT_MINUTES * 60 * 1000);
+ 
++  const appointmentId = crypto.randomUUID();
++
+   const { error: insertError } = await supabase.from("appointments").insert({
+-    id: crypto.randomUUID(),
++    id: appointmentId,
+     tenant_id: tenant.id,
+     patient_id: user.id,
+     patient_name: name,
+@@ -139,5 +145,20 @@ export async function bookAppointment(input: BookingInput): Promise<BookingResul
+ 
+   const emailSent = await sendEmail({ to: user.email, ...email });
+ 
++  // Aviso al consultorio (si configuró su correo de avisos).
++  const clinicEmail = await getClinicEmail(supabase, appointmentId);
++  if (clinicEmail) {
++    await sendEmail({
++      to: clinicEmail,
++      ...buildClinicNewBookingEmail({
++        patientName: name,
++        patientEmail: user.email,
++        dateLabel: formatLongDate(getClinicDateIso(startsAt)),
++        timeLabel: formatTimeLabel(getClinicTime(startsAt)),
++        agendaUrl: domain ? `https://${domain}/doctor/citas` : null,
++      }),
++    });
++  }
++
+   return { ok: true, emailSent };
+ }
+diff --git a/src/app/[tenant]/mi-cita/CancelAppointmentButton.tsx b/src/app/[tenant]/mi-cita/CancelAppointmentButton.tsx
+new file mode 100644
+index 0000000..c513b6b
+--- /dev/null
++++ b/src/app/[tenant]/mi-cita/CancelAppointmentButton.tsx
+@@ -0,0 +1,100 @@
++"use client";
++
++import { useState } from "react";
++import { X } from "lucide-react";
++import { Button } from "@/components/ui/Button";
++import { MIN_CANCEL_HOURS } from "@/lib/booking";
++import { cancelMyAppointment } from "./actions";
++
++type CancelAppointmentButtonProps = {
++  slug: string;
++  id: string;
++  tooLate: boolean;
++  phone: string;
++  onCancelled: () => void;
++};
++
++export function CancelAppointmentButton({
++  slug,
++  id,
++  tooLate,
++  phone,
++  onCancelled,
++}: CancelAppointmentButtonProps) {
++  const [confirming, setConfirming] = useState(false);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | undefined>(undefined);
++
++  async function handleCancel() {
++    if (busy) return;
++
++    setBusy(true);
++    setError(undefined);
++
++    const result = await cancelMyAppointment(slug, id);
++
++    setBusy(false);
++
++    if (!result.ok) {
++      setError(result.error);
++      return;
++    }
++
++    onCancelled();
++  }
++
++  if (tooLate) {
++    return (
++      <p className="text-14 text-text-muted">
++        Para cancelar con menos de {MIN_CANCEL_HOURS} horas de anticipación,
++        contacta al consultorio{phone ? `: ${phone}` : ""}.
++      </p>
++    );
++  }
++
++  return (
++    <div className="flex flex-col gap-ds-2">
++      {confirming ? (
++        <div className="flex flex-col gap-ds-3 rounded-md border border-border bg-surface p-ds-4">
++          <p className="text-14 font-bold text-text">
++            ¿Cancelar esta cita? El horario quedará libre y avisaremos al
++            consultorio.
++          </p>
++          <div className="flex flex-wrap items-center justify-end gap-ds-3">
++            <Button
++              variant="secondary"
++              onClick={() => {
++                setConfirming(false);
++                setError(undefined);
++              }}
++            >
++              Volver
++            </Button>
++            <Button
++              variant={busy ? "disabled" : "primary"}
++              icon={<X size={20} aria-hidden="true" />}
++              onClick={handleCancel}
++            >
++              {busy ? "Cancelando…" : "Sí, cancelar"}
++            </Button>
++          </div>
++        </div>
++      ) : (
++        <button
++          type="button"
++          onClick={() => setConfirming(true)}
++          className="flex min-h-[44px] items-center gap-ds-2 self-end rounded-sm px-ds-4 text-16 font-bold text-danger"
++        >
++          <X size={20} aria-hidden="true" />
++          Cancelar cita
++        </button>
++      )}
++
++      {error ? (
++        <p role="alert" className="text-14 text-danger">
++          {error}
++        </p>
++      ) : null}
++    </div>
++  );
++}
+diff --git a/src/app/[tenant]/mi-cita/MiCitaClient.tsx b/src/app/[tenant]/mi-cita/MiCitaClient.tsx
+index 2e9b9a9..d67b230 100644
+--- a/src/app/[tenant]/mi-cita/MiCitaClient.tsx
++++ b/src/app/[tenant]/mi-cita/MiCitaClient.tsx
+@@ -12,9 +12,11 @@ import {
+   getClinicTime,
+   getNowMs,
+ } from "@/lib/clinic-time";
++import { MIN_CANCEL_HOURS } from "@/lib/booking";
+ import { formatLongDate, formatTimeLabel } from "@/lib/format-date";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
++import { CancelAppointmentButton } from "./CancelAppointmentButton";
+ 
+ type MyAppointment = {
+   id: string;
+@@ -26,7 +28,7 @@ type LoadState =
+   | { kind: "loading" }
+   | { kind: "anon" }
+   | { kind: "error" }
+-  | { kind: "ready"; email: string | null; items: MyAppointment[] };
++  | { kind: "ready"; email: string | null; items: MyAppointment[]; loadedAtMs: number };
+ 
+ type MiCitaClientProps = {
+   tenant: Tenant;
+@@ -79,6 +81,7 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+           kind: "ready",
+           email: user.email ?? null,
+           items: data as MyAppointment[],
++          loadedAtMs: getNowMs(),
+         });
+       } catch {
+         if (!cancelled) setState({ kind: "error" });
+@@ -97,6 +100,11 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+     setReloadKey((current) => current + 1);
+   }
+ 
++  function handleCancelled() {
++    setState({ kind: "loading" });
++    setReloadKey((current) => current + 1);
++  }
++
+   async function handleSignOut() {
+     setSignOutError(undefined);
+ 
+@@ -113,6 +121,7 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+ 
+   const address = tenant.address || (tenant.addressLines ?? []).join(", ");
+   const items = state.kind === "ready" ? state.items : [];
++  const loadedAtMs = state.kind === "ready" ? state.loadedAtMs : 0;
+ 
+   return (
+     <>
+@@ -198,7 +207,7 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+               const period = periodParts.join(" ");
+ 
+               return (
+-                <li key={item.id}>
++                <li key={item.id} className="flex flex-col gap-ds-2">
+                   <article className="flex items-center gap-ds-4 rounded-md border border-border bg-surface p-ds-5">
+                     <time
+                       dateTime={item.starts_at}
+@@ -222,6 +231,18 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
+                       <Badge variant="cancelada" />
+                     ) : null}
+                   </article>
++                  {item.status === "confirmed" ? (
++                    <CancelAppointmentButton
++                      slug={tenant.slug}
++                      id={item.id}
++                      tooLate={
++                        new Date(item.starts_at).getTime() - loadedAtMs <
++                        MIN_CANCEL_HOURS * 60 * 60 * 1000
++                      }
++                      phone={tenant.phone}
++                      onCancelled={handleCancelled}
++                    />
++                  ) : null}
+                 </li>
+               );
+             })}
+diff --git a/src/app/[tenant]/mi-cita/actions.ts b/src/app/[tenant]/mi-cita/actions.ts
+new file mode 100644
+index 0000000..742b0a7
+--- /dev/null
++++ b/src/app/[tenant]/mi-cita/actions.ts
+@@ -0,0 +1,123 @@
++"use server";
++
++import { MIN_CANCEL_HOURS } from "@/lib/booking";
++import {
++  buildClinicCancelledByPatientEmail,
++  buildPatientSelfCancelEmail,
++} from "@/lib/booking-email";
++import { getClinicEmail } from "@/lib/clinic-notify";
++import { getClinicDateIso, getClinicTime, getNowMs } from "@/lib/clinic-time";
++import { sendEmail } from "@/lib/email";
++import { formatLongDate, formatTimeLabel } from "@/lib/format-date";
++import { createClient } from "@/lib/supabase/server";
++import { getTenantBySlug } from "@/lib/tenant";
++
++export type CancelMineResult =
++  | { ok: true; emailSent: boolean }
++  | { ok: false; error: string };
++
++const UUID_REGEX =
++  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++const HOUR_MS = 60 * 60 * 1000;
++
++type AppointmentRow = {
++  id: string;
++  starts_at: string;
++  status: string;
++  patient_name: string | null;
++};
++
++export async function cancelMyAppointment(
++  slug: string,
++  id: string,
++): Promise<CancelMineResult> {
++  if (typeof slug !== "string" || !UUID_REGEX.test(id)) {
++    return { ok: false, error: "Cita inválida." };
++  }
++
++  const tenant = await getTenantBySlug(slug);
++  if (!tenant) return { ok: false, error: "No encontramos el consultorio." };
++
++  const tooLateMessage = `Ya no puedes cancelar en línea con menos de ${MIN_CANCEL_HOURS} horas de anticipación.${
++    tenant.phone ? ` Contacta al consultorio: ${tenant.phone}.` : " Contacta al consultorio."
++  }`;
++
++  const supabase = await createClient();
++
++  const {
++    data: { user },
++  } = await supabase.auth.getUser();
++
++  if (!user || !user.email) {
++    return { ok: false, error: "Tu sesión expiró. Inicia sesión de nuevo." };
++  }
++
++  // La RLS solo devuelve citas del propio paciente.
++  const { data: appointment } = await supabase
++    .from("appointments")
++    .select("id, starts_at, status, patient_name")
++    .eq("id", id)
++    .eq("tenant_id", tenant.id)
++    .eq("patient_id", user.id)
++    .maybeSingle<AppointmentRow>();
++
++  if (!appointment) return { ok: false, error: "No encontramos la cita." };
++
++  if (appointment.status !== "confirmed") {
++    return { ok: false, error: "Esta cita ya no se puede cancelar." };
++  }
++
++  if (new Date(appointment.starts_at).getTime() - getNowMs() < MIN_CANCEL_HOURS * HOUR_MS) {
++    return { ok: false, error: tooLateMessage };
++  }
++
++  const { error: updateError, count } = await supabase
++    .from("appointments")
++    .update({ status: "cancelled" }, { count: "exact" })
++    .eq("id", id)
++    .eq("patient_id", user.id)
++    .eq("status", "confirmed");
++
++  if (updateError) {
++    if ((updateError.message ?? "").includes("cancel_too_late")) {
++      return { ok: false, error: tooLateMessage };
++    }
++    return { ok: false, error: "No pudimos cancelar la cita. Inténtalo de nuevo." };
++  }
++
++  if (!count) {
++    return { ok: false, error: "No pudimos cancelar la cita. Inténtalo de nuevo." };
++  }
++
++  const domain = process.env.NEXT_PUBLIC_APP_DOMAIN;
++  const dateLabel = formatLongDate(getClinicDateIso(appointment.starts_at));
++  const timeLabel = formatTimeLabel(getClinicTime(appointment.starts_at));
++  const patientName = appointment.patient_name ?? "paciente";
++
++  const toPatient = buildPatientSelfCancelEmail({
++    patientName,
++    doctorName: tenant.name,
++    dateLabel,
++    timeLabel,
++    bookingUrl: domain ? `https://${domain}/${tenant.slug}/agendar` : null,
++  });
++
++  const emailSent = await sendEmail({ to: user.email, ...toPatient });
++
++  // Aviso al consultorio (si configuró su correo de avisos).
++  const clinicEmail = await getClinicEmail(supabase, appointment.id);
++  if (clinicEmail) {
++    await sendEmail({
++      to: clinicEmail,
++      ...buildClinicCancelledByPatientEmail({
++        patientName,
++        patientEmail: user.email,
++        dateLabel,
++        timeLabel,
++        agendaUrl: domain ? `https://${domain}/doctor/citas` : null,
++      }),
++    });
++  }
++
++  return { ok: true, emailSent };
++}
+diff --git a/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx b/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
+index 77cc47d..ddaef0d 100644
+--- a/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
++++ b/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
+@@ -30,6 +30,7 @@ export type ConfiguracionTenant = {
+   address: string | null;
+   city: string | null;
+   phone: string | null;
++  contactEmail: string | null;
+   photoUrl: string | null;
+   primaryColor: string | null;
+   primaryHoverColor: string | null;
+@@ -42,10 +43,13 @@ type FormValues = {
+   address: string;
+   city: string;
+   phone: string;
++  contactEmail: string;
+   color: string | null;
+ };
+ 
+-type FormErrors = Partial<Record<"name" | "photoUrl", string>>;
++type FormErrors = Partial<Record<"name" | "photoUrl" | "contactEmail", string>>;
++
++const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
+ 
+ type ConfiguracionClientProps = {
+   tenant: ConfiguracionTenant;
+@@ -72,6 +76,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+     address: tenant.address ?? "",
+     city: tenant.city ?? "",
+     phone: tenant.phone ?? "",
++    contactEmail: tenant.contactEmail ?? "",
+     color: findPaletteColor(tenant.primaryColor)?.primary ?? null,
+   };
+ 
+@@ -102,7 +107,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+     setValues((current) => ({ ...current, [key]: value }));
+     setSaved(false);
+     setSaveError(undefined);
+-    if (key === "name" || key === "photoUrl") {
++    if (key === "name" || key === "photoUrl" || key === "contactEmail") {
+       setErrors((current) => ({ ...current, [key]: undefined }));
+     }
+   }
+@@ -119,6 +124,11 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+       next.photoUrl = "Ingresa una URL válida que empiece con https://";
+     }
+ 
++    const contact = values.contactEmail.trim();
++    if (contact && !EMAIL_REGEX.test(contact)) {
++      next.contactEmail = "Ingresa un correo válido";
++    }
++
+     return next;
+   }
+ 
+@@ -142,6 +152,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+       address: values.address.trim(),
+       city: values.city.trim(),
+       phone: values.phone.trim(),
++      contactEmail: values.contactEmail.trim().toLowerCase(),
+     };
+ 
+     const palette = findPaletteColor(normalized.color);
+@@ -185,6 +196,21 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+       return;
+     }
+ 
++    const { error: privateError } = await supabase
++      .from("tenant_private")
++      .upsert({
++        tenant_id: tenant.id,
++        contact_email: normalized.contactEmail || null,
++      });
++
++    if (privateError) {
++      setSaveError(
++        "Guardamos tu configuración, pero no pudimos guardar el correo de avisos. Inténtalo de nuevo.",
++      );
++      setSaving(false);
++      return;
++    }
++
+     setValues(normalized);
+     setBaseline(normalized);
+     setSaved(true);
+@@ -340,6 +366,16 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+             value={values.phone}
+             onChange={(value) => setField("phone", value)}
+           />
++          <Input
++            type="email"
++            inputMode="email"
++            autoComplete="email"
++            label="Correo para avisos"
++            hint="Te avisamos aquí cuando alguien agenda o cancela una cita. Solo lo ves tú."
++            value={values.contactEmail}
++            onChange={(value) => setField("contactEmail", value)}
++            error={errors.contactEmail}
++          />
+ 
+           <Button
+             type="submit"
+diff --git a/src/app/doctor/(panel)/configuracion/page.tsx b/src/app/doctor/(panel)/configuracion/page.tsx
+index 7b6f5a9..23d5acf 100644
+--- a/src/app/doctor/(panel)/configuracion/page.tsx
++++ b/src/app/doctor/(panel)/configuracion/page.tsx
+@@ -39,6 +39,12 @@ export default async function ConfiguracionPage() {
+ 
+   const tenant = profile.tenants;
+ 
++  const { data: privateRow } = await supabase
++    .from("tenant_private")
++    .select("contact_email")
++    .eq("tenant_id", tenant.id)
++    .maybeSingle<{ contact_email: string | null }>();
++
+   return (
+     <ConfiguracionClient
+       tenant={{
+@@ -50,6 +56,7 @@ export default async function ConfiguracionPage() {
+         address: tenant.address,
+         city: tenant.city,
+         phone: tenant.phone,
++        contactEmail: privateRow?.contact_email ?? null,
+         photoUrl: tenant.photo_url,
+         primaryColor: tenant.primary_color,
+         primaryHoverColor: tenant.primary_color_hover,
+diff --git a/src/lib/booking-email.ts b/src/lib/booking-email.ts
+index 2024a62..362604b 100644
+--- a/src/lib/booking-email.ts
++++ b/src/lib/booking-email.ts
+@@ -66,3 +66,106 @@ export function buildConfirmationEmail(input: ConfirmationEmailInput) {
+ 
+   return { subject, html, text };
+ }
++
++// ---------------------------------------------------------------------------
++// Avisos simples (consultorio y cancelación del paciente)
++// ---------------------------------------------------------------------------
++
++type SimpleEmailInput = {
++  title: string;
++  lines: string[];
++  link?: { label: string; url: string } | null;
++  footer?: string;
++};
++
++function buildSimpleEmail(input: SimpleEmailInput) {
++  const e = escapeHtml;
++
++  const text = [
++    ...input.lines,
++    input.link ? `\n${input.link.label}: ${input.link.url}` : "",
++    input.footer ? `\n${input.footer}` : "",
++  ]
++    .filter((line, index, all) => line !== "" || all[index - 1] !== "")
++    .join("\n");
++
++  const html = `
++<div style="font-family: Arial, Helvetica, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; color: #243b36;">
++  <h2 style="margin: 0 0 12px; font-size: 20px;">${e(input.title)}</h2>
++  ${input.lines
++    .map((line) => `<p style="margin: 0 0 12px; font-size: 14px;">${e(line)}</p>`)
++    .join("")}
++  ${
++    input.link
++      ? `<p style="margin: 0 0 16px; font-size: 14px;"><a href="${e(input.link.url)}" style="color: #28685c;">${e(input.link.label)}</a></p>`
++      : ""
++  }
++  ${input.footer ? `<p style="margin: 0; font-size: 12px; color: #65736e;">${e(input.footer)}</p>` : ""}
++</div>`.trim();
++
++  return { html, text };
++}
++
++type ClinicAppointmentEmailInput = {
++  patientName: string;
++  patientEmail: string;
++  dateLabel: string;
++  timeLabel: string;
++  agendaUrl: string | null;
++};
++
++export function buildClinicNewBookingEmail(input: ClinicAppointmentEmailInput) {
++  return {
++    subject: `Nueva cita: ${input.dateLabel} a las ${input.timeLabel}`,
++    ...buildSimpleEmail({
++      title: "Nueva cita agendada",
++      lines: [
++        `${input.patientName} (${input.patientEmail}) agendó una cita.`,
++        `Fecha: ${input.dateLabel}`,
++        `Hora: ${input.timeLabel}`,
++      ],
++      link: input.agendaUrl ? { label: "Ver mis citas", url: input.agendaUrl } : null,
++    }),
++  };
++}
++
++export function buildClinicCancelledByPatientEmail(input: ClinicAppointmentEmailInput) {
++  return {
++    subject: `Cita cancelada por el paciente: ${input.dateLabel} a las ${input.timeLabel}`,
++    ...buildSimpleEmail({
++      title: "Un paciente canceló su cita",
++      lines: [
++        `${input.patientName} (${input.patientEmail}) canceló su cita.`,
++        `Fecha: ${input.dateLabel}`,
++        `Hora: ${input.timeLabel}`,
++        "El horario quedó libre para otros pacientes.",
++      ],
++      link: input.agendaUrl ? { label: "Ver mis citas", url: input.agendaUrl } : null,
++    }),
++  };
++}
++
++type PatientSelfCancelEmailInput = {
++  patientName: string;
++  doctorName: string;
++  dateLabel: string;
++  timeLabel: string;
++  bookingUrl: string | null;
++};
++
++export function buildPatientSelfCancelEmail(input: PatientSelfCancelEmailInput) {
++  return {
++    subject: `Cancelaste tu cita del ${input.dateLabel}`,
++    ...buildSimpleEmail({
++      title: "Tu cita fue cancelada",
++      lines: [
++        `Hola ${input.patientName},`,
++        `Cancelaste tu cita con ${input.doctorName} del ${input.dateLabel} a las ${input.timeLabel}.`,
++      ],
++      link: input.bookingUrl
++        ? { label: "Agendar otra cita", url: input.bookingUrl }
++        : null,
++      footer: "Si no fuiste tú, contacta al consultorio.",
++    }),
++  };
++}
+diff --git a/src/lib/booking.ts b/src/lib/booking.ts
+index e1043df..cc8953c 100644
+--- a/src/lib/booking.ts
++++ b/src/lib/booking.ts
+@@ -3,6 +3,9 @@ import { getNowMs, zonedDateTimeToUtc } from "@/lib/clinic-time";
+ export const SLOT_MINUTES = 30;
+ export const HOLD_MINUTES = 10;
+ 
++// Horas mínimas de anticipación para que el paciente cancele en línea.
++export const MIN_CANCEL_HOURS = 2;
++
+ /** Inicio del slot como instante UTC (la hora se lee en zona del consultorio). */
+ export function getSlotStart(isoDate: string, time: string): Date {
+   return zonedDateTimeToUtc(isoDate, time);
+diff --git a/src/lib/clinic-notify.ts b/src/lib/clinic-notify.ts
+new file mode 100644
+index 0000000..c4914cf
+--- /dev/null
++++ b/src/lib/clinic-notify.ts
+@@ -0,0 +1,19 @@
++import type { createClient } from "@/lib/supabase/server";
++
++type ServerClient = Awaited<ReturnType<typeof createClient>>;
++
++/**
++ * Correo de avisos del consultorio. Solo se obtiene para una cita del propio
++ * paciente (función SQL get_notification_email); nunca es legible en general.
++ */
++export async function getClinicEmail(
++  supabase: ServerClient,
++  appointmentId: string,
++): Promise<string | null> {
++  const { data, error } = await supabase.rpc("get_notification_email", {
++    p_appointment: appointmentId,
++  });
++
++  if (error || typeof data !== "string" || !data) return null;
++  return data;
++}
+diff --git a/supabase/migrations/20261021_notifications_cancel.sql b/supabase/migrations/20261021_notifications_cancel.sql
+new file mode 100644
+index 0000000..c852d53
+--- /dev/null
++++ b/supabase/migrations/20261021_notifications_cancel.sql
+@@ -0,0 +1,166 @@
++-- Avisos al consultorio y cancelación por parte del paciente.
++-- EJECUTAR ESTE SQL ANTES de usar "Cancelar cita" en Mi cita y el correo de avisos.
++
++-- 1) Datos privados del consultorio (NO legibles por pacientes ni anónimos)
++create table if not exists public.tenant_private (
++  tenant_id uuid primary key references public.tenants(id) on delete cascade,
++  contact_email text
++    check (
++      contact_email is null
++      or (char_length(contact_email) <= 254 and contact_email ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$')
++    ),
++  updated_at timestamptz default now()
++);
++
++alter table public.tenant_private enable row level security;
++
++drop policy if exists tenant_private_doctor on public.tenant_private;
++create policy tenant_private_doctor on public.tenant_private
++  for all to authenticated
++  using (
++    tenant_id in (select tenant_id from public.doctor_profiles where user_id = auth.uid())
++  )
++  with check (
++    tenant_id in (select tenant_id from public.doctor_profiles where user_id = auth.uid())
++  );
++
++revoke all on public.tenant_private from anon;
++revoke truncate, references, trigger on public.tenant_private from authenticated;
++
++-- 2) El servidor obtiene el correo de avisos SOLO para una cita del propio paciente
++create or replace function public.get_notification_email(p_appointment uuid)
++returns text
++language sql
++security definer
++set search_path = public
++stable
++as $$
++  select p.contact_email
++  from public.appointments a
++  join public.tenant_private p on p.tenant_id = a.tenant_id
++  where a.id = p_appointment
++    and a.patient_id = auth.uid()
++  limit 1;
++$$;
++
++revoke all on function public.get_notification_email(uuid) from public, anon;
++grant execute on function public.get_notification_email(uuid) to authenticated;
++
++-- 3) El paciente puede cancelar su propia cita confirmada (con 2 h de anticipación)
++drop policy if exists appointments_patient_cancel on public.appointments;
++create policy appointments_patient_cancel on public.appointments
++  for update to authenticated
++  using (patient_id = auth.uid() and status = 'confirmed')
++  with check (patient_id = auth.uid() and status = 'cancelled');
++
++-- 4) Guardia de citas: ahora permite esa cancelación y nada más
++create or replace function public.appointments_guard()
++returns trigger
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  is_doctor boolean := false;
++  tz text;
++  local_start timestamp;
++  local_end timestamp;
++begin
++  -- Sin sesión de usuario (SQL Editor / service role): sin restricciones.
++  -- Los anónimos no tienen política de INSERT/UPDATE, así que RLS los frena.
++  if auth.uid() is null then
++    return new;
++  end if;
++
++  -- Serializa las reservas de un mismo consultorio
++  perform pg_advisory_xact_lock(hashtextextended(new.tenant_id::text, 0));
++
++  select exists (
++    select 1 from public.doctor_profiles
++    where user_id = auth.uid() and tenant_id = new.tenant_id
++  ) into is_doctor;
++
++  if tg_op = 'INSERT' then
++    if not is_doctor then
++      if exists (
++        select 1 from public.tenants t
++        where t.id = new.tenant_id and t.current_status = 'agenda-cerrada'
++      ) then
++        raise exception 'agenda_closed' using errcode = '23514';
++      end if;
++      if new.status <> 'confirmed' or new.patient_id is distinct from auth.uid() then
++        raise exception 'invalid_booking' using errcode = '23514';
++      end if;
++      if new.ends_at <> new.starts_at + interval '30 minutes' then
++        raise exception 'invalid_duration' using errcode = '23514';
++      end if;
++      if new.starts_at <= now() or new.starts_at > now() + interval '60 days' then
++        raise exception 'invalid_start' using errcode = '23514';
++      end if;
++
++      -- La cita debe caer dentro del horario semanal del consultorio,
++      -- alineada a bloques de 30 min desde el inicio de la ventana.
++      select t.timezone into tz from public.tenants t where t.id = new.tenant_id;
++      local_start := new.starts_at at time zone coalesce(tz, 'America/Mazatlan');
++      local_end := new.ends_at at time zone coalesce(tz, 'America/Mazatlan');
++
++      if local_start::date <> local_end::date or not exists (
++        select 1 from public.availability_rules r
++        where r.tenant_id = new.tenant_id
++          and r.weekday = extract(dow from local_start)::int
++          and local_start::time >= r.start_time
++          and local_end::time <= r.end_time
++          and mod(extract(epoch from (local_start::time - r.start_time))::int, 1800) = 0
++      ) then
++        raise exception 'outside_hours' using errcode = '23514';
++      end if;
++    end if;
++  elsif not is_doctor then
++    -- El paciente solo puede cancelar su propia cita confirmada, sin tocar nada más
++    if old.patient_id is distinct from auth.uid()
++       or old.status <> 'confirmed'
++       or new.status <> 'cancelled'
++       or new.tenant_id <> old.tenant_id
++       or new.starts_at <> old.starts_at
++       or new.ends_at <> old.ends_at
++       or new.patient_id is distinct from old.patient_id
++       or new.patient_email is distinct from old.patient_email
++       or new.patient_name is distinct from old.patient_name
++       or new.reason is distinct from old.reason
++       or new.hold_expires_at is distinct from old.hold_expires_at then
++      raise exception 'frozen_fields' using errcode = '23514';
++    end if;
++    if old.starts_at < now() + interval '2 hours' then
++      raise exception 'cancel_too_late' using errcode = '23514';
++    end if;
++  end if;
++
++  -- Sin solapamientos con otras citas ni bloqueos
++  if new.status in ('confirmed', 'pending')
++     and (
++       tg_op = 'INSERT'
++       or old.status is distinct from new.status
++       or old.starts_at is distinct from new.starts_at
++       or old.ends_at is distinct from new.ends_at
++     ) then
++    if exists (
++      select 1 from public.appointments a
++      where a.tenant_id = new.tenant_id
++        and a.id <> new.id
++        and (
++          a.status in ('confirmed', 'attended')
++          or (a.status = 'pending' and a.hold_expires_at > now())
++        )
++        and tstzrange(a.starts_at, a.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) or exists (
++      select 1 from public.availability_blocks b
++      where b.tenant_id = new.tenant_id
++        and tstzrange(b.starts_at, b.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) then
++      raise exception 'slot_unavailable' using errcode = '23P01';
++    end if;
++  end if;
++
++  return new;
++end;
++$$;

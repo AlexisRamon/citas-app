@@ -50,6 +50,9 @@ export function AppointmentCard({
       </div>
 
       {status === "cancelled" ? <Badge variant="cancelada" /> : null}
+      {status === "attended" ? (
+        <Badge variant="verificado" label="Atendida" />
+      ) : null}
     </article>
   );
 }

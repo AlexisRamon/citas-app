@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import { getAvailabilityRules } from "@/lib/availability-data";
 import { getTenantBySlug } from "@/lib/tenant";
 import { AgendarClient } from "./AgendarClient";
 
@@ -14,5 +15,7 @@ export default async function AgendarPage({ params }: PageProps) {
     redirect(`/${tenant.slug}/home`);
   }
 
-  return <AgendarClient tenant={tenant} />;
+  const rules = await getAvailabilityRules(tenant.id);
+
+  return <AgendarClient tenant={tenant} rules={rules} />;
 }

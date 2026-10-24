@@ -3,6 +3,9 @@ import { getNowMs, zonedDateTimeToUtc } from "@/lib/clinic-time";
 export const SLOT_MINUTES = 30;
 export const HOLD_MINUTES = 10;
 
+// Horas mínimas de anticipación para que el paciente cancele en línea.
+export const MIN_CANCEL_HOURS = 2;
+
 /** Inicio del slot como instante UTC (la hora se lee en zona del consultorio). */
 export function getSlotStart(isoDate: string, time: string): Date {
   return zonedDateTimeToUtc(isoDate, time);

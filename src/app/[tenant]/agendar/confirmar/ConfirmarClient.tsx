@@ -28,6 +28,8 @@ export function ConfirmarClient({ tenant }: ConfirmarClientProps) {
   const date = dateParam && isValidIsoDate(dateParam) ? dateParam : null;
   const time = timeParam && isValidTime(timeParam) ? timeParam : null;
 
+  const emailSent = searchParams.get("correo") === "1";
+
   const dateTimeLabel =
     date && time
       ? `${formatLongDate(date)} · ${formatTimeLabel(time)}`
@@ -99,6 +101,7 @@ export function ConfirmarClient({ tenant }: ConfirmarClientProps) {
           <h1 className="text-24 font-bold text-text">¡Cita confirmada!</h1>
           <p className="text-14 text-text-muted">
             Tu cita está lista. Guarda los detalles para tu visita.
+            {emailSent ? " Te enviamos los detalles por correo." : ""}
           </p>
         </section>
 

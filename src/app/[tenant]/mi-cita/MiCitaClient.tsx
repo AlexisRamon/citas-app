@@ -12,9 +12,11 @@ import {
   getClinicTime,
   getNowMs,
 } from "@/lib/clinic-time";
+import { MIN_CANCEL_HOURS } from "@/lib/booking";
 import { formatLongDate, formatTimeLabel } from "@/lib/format-date";
 import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
+import { CancelAppointmentButton } from "./CancelAppointmentButton";
 
 type MyAppointment = {
   id: string;
@@ -26,7 +28,7 @@ type LoadState =
   | { kind: "loading" }
   | { kind: "anon" }
   | { kind: "error" }
-  | { kind: "ready"; email: string | null; items: MyAppointment[] };
+  | { kind: "ready"; email: string | null; items: MyAppointment[]; loadedAtMs: number };
 
 type MiCitaClientProps = {
   tenant: Tenant;
@@ -79,6 +81,7 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
           kind: "ready",
           email: user.email ?? null,
           items: data as MyAppointment[],
+          loadedAtMs: getNowMs(),
         });
       } catch {
         if (!cancelled) setState({ kind: "error" });
@@ -93,6 +96,11 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
   }, [tenant.id, reloadKey]);
 
   function handleLoggedIn() {
+    setState({ kind: "loading" });
+    setReloadKey((current) => current + 1);
+  }
+
+  function handleCancelled() {
     setState({ kind: "loading" });
     setReloadKey((current) => current + 1);
   }
@@ -113,6 +121,7 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
 
   const address = tenant.address || (tenant.addressLines ?? []).join(", ");
   const items = state.kind === "ready" ? state.items : [];
+  const loadedAtMs = state.kind === "ready" ? state.loadedAtMs : 0;
 
   return (
     <>
@@ -198,7 +207,7 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
               const period = periodParts.join(" ");
 
               return (
-                <li key={item.id}>
+                <li key={item.id} className="flex flex-col gap-ds-2">
                   <article className="flex items-center gap-ds-4 rounded-md border border-border bg-surface p-ds-5">
                     <time
                       dateTime={item.starts_at}
@@ -222,6 +231,18 @@ export function MiCitaClient({ tenant }: MiCitaClientProps) {
                       <Badge variant="cancelada" />
                     ) : null}
                   </article>
+                  {item.status === "confirmed" ? (
+                    <CancelAppointmentButton
+                      slug={tenant.slug}
+                      id={item.id}
+                      tooLate={
+                        new Date(item.starts_at).getTime() - loadedAtMs <
+                        MIN_CANCEL_HOURS * 60 * 60 * 1000
+                      }
+                      phone={tenant.phone}
+                      onCancelled={handleCancelled}
+                    />
+                  ) : null}
                 </li>
               );
             })}

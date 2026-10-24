@@ -1,0 +1,231 @@
+diff --git a/src/app/[tenant]/agendar/AgendarClient.tsx b/src/app/[tenant]/agendar/AgendarClient.tsx
+index 0d2af00..908c3ae 100644
+--- a/src/app/[tenant]/agendar/AgendarClient.tsx
++++ b/src/app/[tenant]/agendar/AgendarClient.tsx
+@@ -8,8 +8,6 @@ import { BottomNav } from "@/components/ui/BottomNav";
+ import { Button } from "@/components/ui/Button";
+ import { CalendarCell } from "@/components/ui/CalendarCell";
+ import {
+-  getClinicDateIso,
+-  getClinicTime,
+   getClinicTodayIso,
+   getNowMs,
+   zonedDateTimeToUtc,
+@@ -25,7 +23,12 @@ import {
+   hasHoursOnWeekday,
+   type AvailabilityRule,
+ } from "@/lib/availability";
+-import { isSlotPast } from "@/lib/slots";
++import {
++  isSlotBusy,
++  isSlotPast,
++  toBusyRanges,
++  type BusyRange,
++} from "@/lib/slots";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ 
+@@ -64,13 +67,24 @@ export function AgendarClient({ tenant, rules }: AgendarClientProps) {
+   );
+ 
+   const [pickedIso, setPickedIso] = useState<string | null>(null);
+-  const [busyByDate, setBusyByDate] = useState<Record<string, Set<string>> | null>(
+-    null,
+-  );
++  const [busyRanges, setBusyRanges] = useState<BusyRange[] | null>(null);
+   const [nowMs, setNowMs] = useState(0);
+   const [cuposError, setCuposError] = useState(false);
+ 
+-  const firstOpenIso = week.find((iso) => !isClosedIso(rules, iso)) ?? null;
++  // Cupos de un día: horario semanal menos citas, bloqueos y horas ya pasadas.
++  const dayCupos = (iso: string) =>
++    getSlotsForDate(rules, iso).filter(
++      (time) =>
++        !isSlotBusy(iso, time, busyRanges ?? []) &&
++        !isSlotPast(iso, time, nowMs),
++    ).length;
++
++  // Un día queda cerrado si no tiene horario o si ya no quedan cupos
++  // (bloqueado por el doctor, lleno o con todos sus horarios pasados).
++  const isDayClosed = (iso: string) =>
++    isClosedIso(rules, iso) || (busyRanges !== null && dayCupos(iso) === 0);
++
++  const firstOpenIso = week.find((iso) => !isDayClosed(iso)) ?? null;
+   const selectedIso = pickedIso ?? firstOpenIso;
+ 
+   useEffect(() => {
+@@ -89,10 +103,10 @@ export function AgendarClient({ tenant, rules }: AgendarClientProps) {
+ 
+         const { data, error } = await supabase
+           .from("public_busy_slots")
+-          .select("starts_at")
++          .select("starts_at, ends_at")
+           .eq("tenant_id", tenant.id)
+-          .gte("starts_at", rangeStart.toISOString())
+-          .lt("starts_at", rangeEnd.toISOString());
++          .lt("starts_at", rangeEnd.toISOString())
++          .gt("ends_at", rangeStart.toISOString());
+ 
+         if (cancelled) return;
+ 
+@@ -101,13 +115,9 @@ export function AgendarClient({ tenant, rules }: AgendarClientProps) {
+           return;
+         }
+ 
+-        const byDate: Record<string, Set<string>> = {};
+-        for (const row of data as { starts_at: string }[]) {
+-          const iso = getClinicDateIso(row.starts_at);
+-          (byDate[iso] ??= new Set()).add(getClinicTime(row.starts_at));
+-        }
+-
+-        setBusyByDate(byDate);
++        setBusyRanges(
++          toBusyRanges(data as { starts_at: string; ends_at: string }[]),
++        );
+         setNowMs(getNowMs());
+         setCuposError(false);
+       } catch {
+@@ -138,14 +148,7 @@ export function AgendarClient({ tenant, rules }: AgendarClientProps) {
+ 
+   const rangeLabel = formatDateRange(week[0], week[week.length - 1]);
+ 
+-  const cupos =
+-    selectedIso && busyByDate
+-      ? getSlotsForDate(rules, selectedIso).filter(
+-          (time) =>
+-            !busyByDate[selectedIso]?.has(time) &&
+-            !isSlotPast(selectedIso, time, nowMs),
+-        ).length
+-      : null;
++  const cupos = selectedIso && busyRanges ? dayCupos(selectedIso) : null;
+ 
+   const noHours = rules.length === 0;
+   const canContinue = Boolean(selectedIso) && cupos !== 0;
+@@ -181,7 +184,7 @@ export function AgendarClient({ tenant, rules }: AgendarClientProps) {
+           <ul className="-mx-ds-6 flex gap-ds-2 overflow-x-auto px-ds-6 pb-ds-1">
+             {week.map((iso) => {
+               const day = parseIsoDate(iso);
+-              const state = isClosedIso(rules, iso)
++              const state = isDayClosed(iso)
+                 ? "closed"
+                 : iso === selectedIso
+                   ? "selected"
+@@ -238,6 +241,12 @@ export function AgendarClient({ tenant, rules }: AgendarClientProps) {
+             title="El consultorio aún no tiene horarios disponibles"
+             description="Vuelve más tarde o contacta al consultorio."
+           />
++        ) : busyRanges !== null && week.every(isDayClosed) ? (
++          <Alert
++            variant="warning"
++            title="No hay cupos esta semana"
++            description="Vuelve pronto o contacta al consultorio."
++          />
+         ) : (
+           <Alert
+             variant="info"
+diff --git a/src/app/[tenant]/agendar/horario/HorarioClient.tsx b/src/app/[tenant]/agendar/horario/HorarioClient.tsx
+index cf2c6f0..5d0b64a 100644
+--- a/src/app/[tenant]/agendar/horario/HorarioClient.tsx
++++ b/src/app/[tenant]/agendar/horario/HorarioClient.tsx
+@@ -22,7 +22,6 @@ import {
+   isValidTime,
+ } from "@/lib/format-date";
+ import {
+-  getClinicTime,
+   getNowMs,
+   zonedDateTimeToUtc,
+ } from "@/lib/clinic-time";
+@@ -31,7 +30,12 @@ import {
+   splitByPeriod,
+   type AvailabilityRule,
+ } from "@/lib/availability";
+-import { isSlotPast } from "@/lib/slots";
++import {
++  isSlotBusy,
++  isSlotPast,
++  toBusyRanges,
++  type BusyRange,
++} from "@/lib/slots";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ 
+@@ -90,7 +94,7 @@ export function HorarioClient({ tenant, rules }: HorarioClientProps) {
+   const [selectedSlot, setSelectedSlot] = useState<string | null>(() =>
+     timeParam && isValidTime(timeParam) ? timeParam : null,
+   );
+-  const [busySlots, setBusySlots] = useState<Set<string>>(new Set());
++  const [busyRanges, setBusyRanges] = useState<BusyRange[]>([]);
+   const [loadingSlots, setLoadingSlots] = useState(true);
+   const [loadError, setLoadError] = useState(false);
+   const [reloadKey, setReloadKey] = useState(0);
+@@ -113,10 +117,10 @@ export function HorarioClient({ tenant, rules }: HorarioClientProps) {
+ 
+         const { data, error } = await supabase
+           .from("public_busy_slots")
+-          .select("starts_at")
++          .select("starts_at, ends_at")
+           .eq("tenant_id", tenant.id)
+-          .gte("starts_at", dayStart.toISOString())
+-          .lte("starts_at", dayEnd.toISOString());
++          .lt("starts_at", dayEnd.toISOString())
++          .gt("ends_at", dayStart.toISOString());
+ 
+         if (cancelled) return;
+ 
+@@ -126,12 +130,9 @@ export function HorarioClient({ tenant, rules }: HorarioClientProps) {
+           return;
+         }
+ 
+-        const busy = new Set<string>();
+-        for (const row of data as { starts_at: string }[]) {
+-          busy.add(getClinicTime(row.starts_at));
+-        }
+-
+-        setBusySlots(busy);
++        setBusyRanges(
++          toBusyRanges(data as { starts_at: string; ends_at: string }[]),
++        );
+         setNowMs(getNowMs());
+         setLoadError(false);
+         setLoadingSlots(false);
+@@ -161,7 +162,7 @@ export function HorarioClient({ tenant, rules }: HorarioClientProps) {
+   const { morning, afternoon } = splitByPeriod(slots);
+ 
+   const isUnavailable = (time: string) =>
+-    busySlots.has(time) || isSlotPast(date, time, nowMs);
++    isSlotBusy(date, time, busyRanges) || isSlotPast(date, time, nowMs);
+ 
+   const activeSlot =
+     selectedSlot &&
+diff --git a/src/lib/slots.ts b/src/lib/slots.ts
+index 48c953d..aff5fb6 100644
+--- a/src/lib/slots.ts
++++ b/src/lib/slots.ts
+@@ -1,6 +1,27 @@
++import { SLOT_MINUTES } from "@/lib/booking";
+ import { zonedDateTimeToUtc } from "@/lib/clinic-time";
+ 
+ /** Un slot ya empezó (o empieza ahora) en hora del consultorio. */
+ export function isSlotPast(isoDate: string, time: string, nowMs: number) {
+   return nowMs > 0 && zonedDateTimeToUtc(isoDate, time).getTime() <= nowMs;
+ }
++
++/** Intervalo ocupado (cita, bloqueo de horas o de varios días), en ms UTC. */
++export type BusyRange = { startMs: number; endMs: number };
++
++export function toBusyRanges(
++  rows: { starts_at: string; ends_at: string }[],
++): BusyRange[] {
++  return rows.map((row) => ({
++    startMs: new Date(row.starts_at).getTime(),
++    endMs: new Date(row.ends_at).getTime(),
++  }));
++}
++
++/** El slot de 30 min se traslapa con algún intervalo ocupado. */
++export function isSlotBusy(isoDate: string, time: string, ranges: BusyRange[]) {
++  const slotStart = zonedDateTimeToUtc(isoDate, time).getTime();
++  const slotEnd = slotStart + SLOT_MINUTES * 60 * 1000;
++
++  return ranges.some((range) => range.startMs < slotEnd && range.endMs > slotStart);
++}

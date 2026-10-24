@@ -22,15 +22,19 @@ import {
   isValidTime,
 } from "@/lib/format-date";
 import {
-  getClinicTime,
   getNowMs,
   zonedDateTimeToUtc,
 } from "@/lib/clinic-time";
 import {
-  AFTERNOON_SLOTS,
-  ALL_SLOTS,
-  MORNING_SLOTS,
+  getSlotsForDate,
+  splitByPeriod,
+  type AvailabilityRule,
+} from "@/lib/availability";
+import {
+  isSlotBusy,
   isSlotPast,
+  toBusyRanges,
+  type BusyRange,
 } from "@/lib/slots";
 import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
@@ -74,7 +78,12 @@ function SlotGroup({ id, label, icon, children }: SlotGroupProps) {
   );
 }
 
-export function HorarioClient({ tenant }: { tenant: Tenant }) {
+type HorarioClientProps = {
+  tenant: Tenant;
+  rules: AvailabilityRule[];
+};
+
+export function HorarioClient({ tenant, rules }: HorarioClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -85,7 +94,7 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
   const [selectedSlot, setSelectedSlot] = useState<string | null>(() =>
     timeParam && isValidTime(timeParam) ? timeParam : null,
   );
-  const [busySlots, setBusySlots] = useState<Set<string>>(new Set());
+  const [busyRanges, setBusyRanges] = useState<BusyRange[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -108,10 +117,10 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
 
         const { data, error } = await supabase
           .from("public_busy_slots")
-          .select("starts_at")
+          .select("starts_at, ends_at")
           .eq("tenant_id", tenant.id)
-          .gte("starts_at", dayStart.toISOString())
-          .lte("starts_at", dayEnd.toISOString());
+          .lt("starts_at", dayEnd.toISOString())
+          .gt("ends_at", dayStart.toISOString());
 
         if (cancelled) return;
 
@@ -121,12 +130,9 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
           return;
         }
 
-        const busy = new Set<string>();
-        for (const row of data as { starts_at: string }[]) {
-          busy.add(getClinicTime(row.starts_at));
-        }
-
-        setBusySlots(busy);
+        setBusyRanges(
+          toBusyRanges(data as { starts_at: string; ends_at: string }[]),
+        );
         setNowMs(getNowMs());
         setLoadError(false);
         setLoadingSlots(false);
@@ -152,12 +158,15 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
 
   if (!date || loadingSlots) return <HorarioSkeleton slug={tenant.slug} />;
 
+  const slots = getSlotsForDate(rules, date);
+  const { morning, afternoon } = splitByPeriod(slots);
+
   const isUnavailable = (time: string) =>
-    busySlots.has(time) || isSlotPast(date, time, nowMs);
+    isSlotBusy(date, time, busyRanges) || isSlotPast(date, time, nowMs);
 
   const activeSlot =
     selectedSlot &&
-    ALL_SLOTS.includes(selectedSlot) &&
+    slots.includes(selectedSlot) &&
     !isUnavailable(selectedSlot)
       ? selectedSlot
       : null;
@@ -264,29 +273,39 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
               Reintentar
             </Button>
           </div>
+        ) : slots.length === 0 ? (
+          <Alert
+            variant="info"
+            title="Este día no hay atención"
+            description="Elige otra fecha."
+          />
         ) : (
           <>
-            <SlotGroup
-              id="franja-manana"
-              label="Mañana"
-              icon={<Sun size={16} aria-hidden="true" />}
-            >
-              {MORNING_SLOTS.map(renderSlot)}
-            </SlotGroup>
+            {morning.length > 0 ? (
+              <SlotGroup
+                id="franja-manana"
+                label="Mañana"
+                icon={<Sun size={16} aria-hidden="true" />}
+              >
+                {morning.map(renderSlot)}
+              </SlotGroup>
+            ) : null}
 
-            <SlotGroup
-              id="franja-tarde"
-              label="Tarde"
-              icon={<Sunset size={16} aria-hidden="true" />}
-            >
-              {AFTERNOON_SLOTS.map(renderSlot)}
-            </SlotGroup>
+            {afternoon.length > 0 ? (
+              <SlotGroup
+                id="franja-tarde"
+                label="Tarde"
+                icon={<Sunset size={16} aria-hidden="true" />}
+              >
+                {afternoon.map(renderSlot)}
+              </SlotGroup>
+            ) : null}
           </>
         )}
 
         <div className="mt-auto flex flex-col gap-ds-3">
           <p className="text-center text-14 text-text-muted">
-            Toca un horario para continuar. Verificarás tu correo al confirmar.
+            Toca un horario para continuar.
           </p>
           <Button
             variant={activeSlot ? "primary" : "disabled"}

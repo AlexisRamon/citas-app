@@ -39,6 +39,12 @@ export default async function ConfiguracionPage() {
 
   const tenant = profile.tenants;
 
+  const { data: privateRow } = await supabase
+    .from("tenant_private")
+    .select("contact_email")
+    .eq("tenant_id", tenant.id)
+    .maybeSingle<{ contact_email: string | null }>();
+
   return (
     <ConfiguracionClient
       tenant={{
@@ -50,6 +56,7 @@ export default async function ConfiguracionPage() {
         address: tenant.address,
         city: tenant.city,
         phone: tenant.phone,
+        contactEmail: privateRow?.contact_email ?? null,
         photoUrl: tenant.photo_url,
         primaryColor: tenant.primary_color,
         primaryHoverColor: tenant.primary_color_hover,

@@ -1,0 +1,266 @@
+diff --git a/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx b/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
+index ddaef0d..bf07221 100644
+--- a/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
++++ b/src/app/doctor/(panel)/configuracion/ConfiguracionClient.tsx
+@@ -31,6 +31,7 @@ export type ConfiguracionTenant = {
+   city: string | null;
+   phone: string | null;
+   contactEmail: string | null;
++  remindersEnabled: boolean;
+   photoUrl: string | null;
+   primaryColor: string | null;
+   primaryHoverColor: string | null;
+@@ -44,6 +45,7 @@ type FormValues = {
+   city: string;
+   phone: string;
+   contactEmail: string;
++  remindersEnabled: boolean;
+   color: string | null;
+ };
+ 
+@@ -77,6 +79,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+     city: tenant.city ?? "",
+     phone: tenant.phone ?? "",
+     contactEmail: tenant.contactEmail ?? "",
++    remindersEnabled: tenant.remindersEnabled,
+     color: findPaletteColor(tenant.primaryColor)?.primary ?? null,
+   };
+ 
+@@ -201,6 +204,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+       .upsert({
+         tenant_id: tenant.id,
+         contact_email: normalized.contactEmail || null,
++        reminders_enabled: normalized.remindersEnabled,
+       });
+ 
+     if (privateError) {
+@@ -376,6 +380,22 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
+             onChange={(value) => setField("contactEmail", value)}
+             error={errors.contactEmail}
+           />
++          <label className="flex min-h-[44px] items-start gap-ds-3 text-16 text-text">
++            <input
++              type="checkbox"
++              checked={values.remindersEnabled}
++              onChange={(event) =>
++                setField("remindersEnabled", event.target.checked)
++              }
++              className="mt-ds-1 size-[24px] shrink-0 accent-primary"
++            />
++            <span className="flex flex-col">
++              <span className="font-bold">Recordatorio a los pacientes</span>
++              <span className="text-14 text-text-muted">
++                Enviamos un correo 24 horas antes de cada cita.
++              </span>
++            </span>
++          </label>
+ 
+           <Button
+             type="submit"
+diff --git a/src/app/doctor/(panel)/configuracion/page.tsx b/src/app/doctor/(panel)/configuracion/page.tsx
+index 23d5acf..4a4b6ec 100644
+--- a/src/app/doctor/(panel)/configuracion/page.tsx
++++ b/src/app/doctor/(panel)/configuracion/page.tsx
+@@ -41,9 +41,12 @@ export default async function ConfiguracionPage() {
+ 
+   const { data: privateRow } = await supabase
+     .from("tenant_private")
+-    .select("contact_email")
++    .select("contact_email, reminders_enabled")
+     .eq("tenant_id", tenant.id)
+-    .maybeSingle<{ contact_email: string | null }>();
++    .maybeSingle<{
++      contact_email: string | null;
++      reminders_enabled: boolean | null;
++    }>();
+ 
+   return (
+     <ConfiguracionClient
+@@ -57,6 +60,7 @@ export default async function ConfiguracionPage() {
+         city: tenant.city,
+         phone: tenant.phone,
+         contactEmail: privateRow?.contact_email ?? null,
++        remindersEnabled: privateRow?.reminders_enabled ?? true,
+         photoUrl: tenant.photo_url,
+         primaryColor: tenant.primary_color,
+         primaryHoverColor: tenant.primary_color_hover,
+diff --git a/supabase/migrations/20261022_reminders.sql b/supabase/migrations/20261022_reminders.sql
+new file mode 100644
+index 0000000..c6aa89f
+--- /dev/null
++++ b/supabase/migrations/20261022_reminders.sql
+@@ -0,0 +1,174 @@
++-- Recordatorios automáticos por correo 24 h antes de la cita.
++--
++-- ANTES de ejecutar este archivo:
++--   1) Corre 20261021_notifications_cancel.sql (crea tenant_private).
++--   2) Activa las extensiones pg_cron y pg_net (Dashboard → Database → Extensions).
++--   3) Guarda tu API key de Resend en Vault (cámbiala por la tuya, una sola vez):
++--        select vault.create_secret('re_TU_KEY_COMPLETA', 'resend_api_key');
++--      Opcionales:
++--        select vault.create_secret('Citas App <onboarding@resend.dev>', 'resend_from');
++--        select vault.create_secret('tudominio.com', 'app_domain');   -- para el enlace a Mi cita
++
++create extension if not exists pg_net;
++create extension if not exists pg_cron with schema pg_catalog;
++
++-- Registro de recordatorios ya enviados (evita duplicados)
++alter table public.appointments
++  add column if not exists reminder_sent_at timestamptz;
++
++-- El doctor puede desactivar los recordatorios (por defecto activos)
++alter table public.tenant_private
++  add column if not exists reminders_enabled boolean not null default true;
++
++create or replace function public.html_escape(p_text text)
++returns text
++language sql
++immutable
++as $$
++  select replace(replace(replace(replace(replace(
++    coalesce(p_text, ''), '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), '"', '&quot;'), '''', '&#39;');
++$$;
++
++-- Envía el recordatorio de las citas confirmadas que ocurren en las próximas 24 h.
++-- Omite las que se agendaron con menos de ~25 h de anticipación (ya recibieron la confirmación).
++create or replace function public.send_appointment_reminders()
++returns integer
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  api_key text;
++  from_addr text;
++  app_domain text;
++  r record;
++  local_ts timestamp;
++  day_label text;
++  time_label text;
++  address text;
++  link_url text;
++  subject text;
++  body_html text;
++  body_text text;
++  sent integer := 0;
++  weekdays text[] := array['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
++  months text[] := array['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
++begin
++  select decrypted_secret into api_key
++  from vault.decrypted_secrets where name = 'resend_api_key' limit 1;
++
++  if api_key is null then
++    raise warning 'send_appointment_reminders: falta el secreto resend_api_key en Vault';
++    return 0;
++  end if;
++
++  select decrypted_secret into from_addr
++  from vault.decrypted_secrets where name = 'resend_from' limit 1;
++  select decrypted_secret into app_domain
++  from vault.decrypted_secrets where name = 'app_domain' limit 1;
++
++  from_addr := coalesce(from_addr, 'Citas App <onboarding@resend.dev>');
++
++  for r in
++    select
++      a.id,
++      a.patient_email,
++      a.patient_name,
++      a.starts_at,
++      t.name as tenant_name,
++      t.slug,
++      t.address as tenant_address,
++      t.phone as tenant_phone,
++      t.timezone as tenant_timezone
++    from public.appointments a
++    join public.tenants t on t.id = a.tenant_id
++    left join public.tenant_private p on p.tenant_id = a.tenant_id
++    where a.status = 'confirmed'
++      and a.reminder_sent_at is null
++      and a.patient_email is not null
++      and a.starts_at > now()
++      and a.starts_at <= now() + interval '24 hours'
++      and a.starts_at - a.created_at > interval '25 hours'
++      and coalesce(p.reminders_enabled, true)
++    order by a.starts_at
++    limit 200
++    for update of a skip locked
++  loop
++    local_ts := r.starts_at at time zone coalesce(r.tenant_timezone, 'America/Mazatlan');
++
++    day_label := weekdays[extract(dow from local_ts)::int + 1]
++      || ' ' || extract(day from local_ts)::int
++      || ' de ' || months[extract(month from local_ts)::int];
++
++    time_label := to_char(local_ts, 'FMHH12:MI')
++      || case when extract(hour from local_ts) >= 12 then ' p. m.' else ' a. m.' end;
++
++    address := coalesce(r.tenant_address, '');
++    link_url := case
++      when app_domain is not null then 'https://' || app_domain || '/' || r.slug || '/mi-cita'
++      else null
++    end;
++
++    subject := 'Recordatorio de tu cita: ' || day_label || ' a las ' || time_label;
++
++    body_text :=
++      'Hola ' || coalesce(r.patient_name, 'paciente') || E',\n\n'
++      || 'Te recordamos tu cita con ' || r.tenant_name || E'.\n\n'
++      || 'Fecha: ' || day_label || E'\n'
++      || 'Hora: ' || time_label || E'\n'
++      || case when address <> '' then 'Dirección: ' || address || E'\n' else '' end
++      || case when coalesce(r.tenant_phone, '') <> '' then 'Teléfono: ' || r.tenant_phone || E'\n' else '' end
++      || case when link_url is not null then E'\nVer o cancelar tu cita: ' || link_url || E'\n' else '' end
++      || E'\nSi no puedes asistir, cancela con anticipación o contacta al consultorio.';
++
++    body_html :=
++      '<div style="font-family: Arial, Helvetica, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; color: #243b36;">'
++      || '<h2 style="margin: 0 0 12px; font-size: 20px;">Recordatorio de tu cita</h2>'
++      || '<p style="margin: 0 0 16px; font-size: 14px;">Hola ' || public.html_escape(coalesce(r.patient_name, 'paciente'))
++      || ', te recordamos tu cita con <strong>' || public.html_escape(r.tenant_name) || '</strong>.</p>'
++      || '<table style="width: 100%; border-collapse: collapse; margin: 0 0 16px; font-size: 14px;">'
++      || '<tr><td style="padding: 8px 0; color: #65736e; width: 96px;">Fecha</td><td style="padding: 8px 0; font-weight: bold;">' || public.html_escape(day_label) || '</td></tr>'
++      || '<tr><td style="padding: 8px 0; color: #65736e;">Hora</td><td style="padding: 8px 0; font-weight: bold;">' || public.html_escape(time_label) || '</td></tr>'
++      || case when address <> '' then '<tr><td style="padding: 8px 0; color: #65736e; vertical-align: top;">Dirección</td><td style="padding: 8px 0; font-weight: bold;">' || public.html_escape(address) || '</td></tr>' else '' end
++      || case when coalesce(r.tenant_phone, '') <> '' then '<tr><td style="padding: 8px 0; color: #65736e;">Teléfono</td><td style="padding: 8px 0; font-weight: bold;">' || public.html_escape(r.tenant_phone) || '</td></tr>' else '' end
++      || '</table>'
++      || case when link_url is not null then '<p style="margin: 0 0 16px; font-size: 14px;"><a href="' || public.html_escape(link_url) || '" style="color: #28685c;">Ver o cancelar mi cita</a></p>' else '' end
++      || '<p style="margin: 0; font-size: 12px; color: #65736e;">Si no puedes asistir, cancela con anticipación o contacta al consultorio.</p>'
++      || '</div>';
++
++    perform net.http_post(
++      url := 'https://api.resend.com/emails',
++      headers := jsonb_build_object(
++        'Authorization', 'Bearer ' || api_key,
++        'Content-Type', 'application/json'
++      ),
++      body := jsonb_build_object(
++        'from', from_addr,
++        'to', jsonb_build_array(r.patient_email),
++        'subject', subject,
++        'html', body_html,
++        'text', body_text
++      )
++    );
++
++    update public.appointments set reminder_sent_at = now() where id = r.id;
++    sent := sent + 1;
++  end loop;
++
++  return sent;
++end;
++$$;
++
++-- Solo el cron (rol postgres) puede ejecutarla; nadie desde la API pública
++revoke all on function public.send_appointment_reminders() from public, anon, authenticated;
++revoke all on function public.html_escape(text) from public, anon, authenticated;
++
++-- Revisa cada hora en punto
++select cron.unschedule('recordatorios-citas')
++where exists (select 1 from cron.job where jobname = 'recordatorios-citas');
++
++select cron.schedule(
++  'recordatorios-citas',
++  '0 * * * *',
++  $cron$select public.send_appointment_reminders();$cron$
++);

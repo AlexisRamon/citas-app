@@ -30,6 +30,7 @@ export type ConfiguracionTenant = {
   address: string | null;
   city: string | null;
   phone: string | null;
+  contactEmail: string | null;
   photoUrl: string | null;
   primaryColor: string | null;
   primaryHoverColor: string | null;
@@ -42,10 +43,13 @@ type FormValues = {
   address: string;
   city: string;
   phone: string;
+  contactEmail: string;
   color: string | null;
 };
 
-type FormErrors = Partial<Record<"name" | "photoUrl", string>>;
+type FormErrors = Partial<Record<"name" | "photoUrl" | "contactEmail", string>>;
+
+const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
 
 type ConfiguracionClientProps = {
   tenant: ConfiguracionTenant;
@@ -72,6 +76,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
     address: tenant.address ?? "",
     city: tenant.city ?? "",
     phone: tenant.phone ?? "",
+    contactEmail: tenant.contactEmail ?? "",
     color: findPaletteColor(tenant.primaryColor)?.primary ?? null,
   };
 
@@ -102,7 +107,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
     setValues((current) => ({ ...current, [key]: value }));
     setSaved(false);
     setSaveError(undefined);
-    if (key === "name" || key === "photoUrl") {
+    if (key === "name" || key === "photoUrl" || key === "contactEmail") {
       setErrors((current) => ({ ...current, [key]: undefined }));
     }
   }
@@ -117,6 +122,11 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
     const photo = values.photoUrl.trim();
     if (photo && !isValidHttpsUrl(photo)) {
       next.photoUrl = "Ingresa una URL válida que empiece con https://";
+    }
+
+    const contact = values.contactEmail.trim();
+    if (contact && !EMAIL_REGEX.test(contact)) {
+      next.contactEmail = "Ingresa un correo válido";
     }
 
     return next;
@@ -142,6 +152,7 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
       address: values.address.trim(),
       city: values.city.trim(),
       phone: values.phone.trim(),
+      contactEmail: values.contactEmail.trim().toLowerCase(),
     };
 
     const palette = findPaletteColor(normalized.color);
@@ -180,6 +191,21 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
     if (!count) {
       setSaveError(
         "No pudimos guardar los cambios: tu cuenta no tiene permiso para editar este consultorio.",
+      );
+      setSaving(false);
+      return;
+    }
+
+    const { error: privateError } = await supabase
+      .from("tenant_private")
+      .upsert({
+        tenant_id: tenant.id,
+        contact_email: normalized.contactEmail || null,
+      });
+
+    if (privateError) {
+      setSaveError(
+        "Guardamos tu configuración, pero no pudimos guardar el correo de avisos. Inténtalo de nuevo.",
       );
       setSaving(false);
       return;
@@ -339,6 +365,16 @@ export function ConfiguracionClient({ tenant }: ConfiguracionClientProps) {
             label="Teléfono"
             value={values.phone}
             onChange={(value) => setField("phone", value)}
+          />
+          <Input
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            label="Correo para avisos"
+            hint="Te avisamos aquí cuando alguien agenda o cancela una cita. Solo lo ves tú."
+            value={values.contactEmail}
+            onChange={(value) => setField("contactEmail", value)}
+            error={errors.contactEmail}
           />
 
           <Button

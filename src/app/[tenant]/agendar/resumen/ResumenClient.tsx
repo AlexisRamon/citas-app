@@ -9,7 +9,6 @@ import { Alert } from "@/components/ui/Alert";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { SLOT_MINUTES, getSlotStart } from "@/lib/booking";
 import {
   formatLongDate,
   formatTimeLabel,
@@ -18,8 +17,7 @@ import {
 } from "@/lib/format-date";
 import { createClient } from "@/lib/supabase/client";
 import type { Tenant } from "@/lib/tenant";
-
-const SLOT_TAKEN_CODES = ["23P01", "23505"];
+import { bookAppointment } from "./actions";
 
 type AuthState =
   | { kind: "loading" }
@@ -117,41 +115,23 @@ export function ResumenClient({ tenant }: ResumenClientProps) {
     setError(undefined);
     setNameError(undefined);
 
-    const supabase = createClient();
-    const startsAt = getSlotStart(date, time);
-    const endsAt = new Date(startsAt.getTime() + SLOT_MINUTES * 60 * 1000);
-
-    const { error: insertError } = await supabase.from("appointments").insert({
-      tenant_id: tenant.id,
-      patient_id: auth.id,
-      patient_name: patientName,
-      patient_email: auth.email,
-      starts_at: startsAt.toISOString(),
-      ends_at: endsAt.toISOString(),
-      status: "confirmed",
+    const result = await bookAppointment({
+      slug: tenant.slug,
+      date,
+      time,
+      name: patientName,
     });
 
-    if (insertError) {
-      const message = insertError.message ?? "";
-
-      if (message.includes("agenda_closed")) {
-        setError("El consultorio cerró su agenda por ahora. Intenta más tarde.");
-      } else if (message.includes("invalid_start")) {
-        setError("Ese horario ya pasó. Elige otro.");
-        setSlotTaken(true);
-      } else if (SLOT_TAKEN_CODES.includes(insertError.code ?? "")) {
-        setError("Ese horario ya no está disponible. Elige otro.");
-        setSlotTaken(true);
-      } else {
-        setError("No pudimos confirmar tu cita. Inténtalo de nuevo.");
-      }
-
+    if (!result.ok) {
+      setError(result.error);
+      setSlotTaken(Boolean(result.slotUnavailable));
       setSaving(false);
       return;
     }
 
     setSaving(false);
     const params = new URLSearchParams({ date, time });
+    if (result.emailSent) params.set("correo", "1");
     router.push(`/${tenant.slug}/agendar/confirmar?${params.toString()}`);
   }
 

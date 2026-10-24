@@ -1,0 +1,1445 @@
+diff --git a/src/app/[tenant]/agendar/AgendarClient.tsx b/src/app/[tenant]/agendar/AgendarClient.tsx
+index 7e85bcf..0d2af00 100644
+--- a/src/app/[tenant]/agendar/AgendarClient.tsx
++++ b/src/app/[tenant]/agendar/AgendarClient.tsx
+@@ -20,12 +20,16 @@ import {
+   parseIsoDate,
+   toIsoDate,
+ } from "@/lib/format-date";
+-import { ALL_SLOTS, isSlotPast } from "@/lib/slots";
++import {
++  getSlotsForDate,
++  hasHoursOnWeekday,
++  type AvailabilityRule,
++} from "@/lib/availability";
++import { isSlotPast } from "@/lib/slots";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ 
+ const WEEKDAYS_SHORT = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+-const CLOSED_WEEKDAYS = [0, 2];
+ 
+ function addDaysIso(isoDate: string, amount: number) {
+   const next = parseIsoDate(isoDate);
+@@ -33,8 +37,8 @@ function addDaysIso(isoDate: string, amount: number) {
+   return toIsoDate(next);
+ }
+ 
+-function isClosedIso(isoDate: string) {
+-  return CLOSED_WEEKDAYS.includes(parseIsoDate(isoDate).getDay());
++function isClosedIso(rules: AvailabilityRule[], isoDate: string) {
++  return !hasHoursOnWeekday(rules, parseIsoDate(isoDate).getDay());
+ }
+ 
+ // "Hoy" depende del dispositivo/reloj: se lee solo en el cliente.
+@@ -43,9 +47,10 @@ const getServerTodayIso = () => null;
+ 
+ type AgendarClientProps = {
+   tenant: Tenant;
++  rules: AvailabilityRule[];
+ };
+ 
+-export function AgendarClient({ tenant }: AgendarClientProps) {
++export function AgendarClient({ tenant, rules }: AgendarClientProps) {
+   const todayIso = useSyncExternalStore(
+     subscribeToNothing,
+     getClinicTodayIso,
+@@ -65,7 +70,7 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+   const [nowMs, setNowMs] = useState(0);
+   const [cuposError, setCuposError] = useState(false);
+ 
+-  const firstOpenIso = week.find((iso) => !isClosedIso(iso)) ?? null;
++  const firstOpenIso = week.find((iso) => !isClosedIso(rules, iso)) ?? null;
+   const selectedIso = pickedIso ?? firstOpenIso;
+ 
+   useEffect(() => {
+@@ -135,13 +140,16 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+ 
+   const cupos =
+     selectedIso && busyByDate
+-      ? ALL_SLOTS.filter(
++      ? getSlotsForDate(rules, selectedIso).filter(
+           (time) =>
+             !busyByDate[selectedIso]?.has(time) &&
+             !isSlotPast(selectedIso, time, nowMs),
+         ).length
+       : null;
+ 
++  const noHours = rules.length === 0;
++  const canContinue = Boolean(selectedIso) && cupos !== 0;
++
+   return (
+     <>
+       <main className="flex min-h-dvh flex-col gap-ds-6 bg-background px-ds-6 pb-[calc(64px+var(--spacing-ds-6)+env(safe-area-inset-bottom))] pt-ds-3">
+@@ -173,7 +181,7 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+           <ul className="-mx-ds-6 flex gap-ds-2 overflow-x-auto px-ds-6 pb-ds-1">
+             {week.map((iso) => {
+               const day = parseIsoDate(iso);
+-              const state = isClosedIso(iso)
++              const state = isClosedIso(rules, iso)
+                 ? "closed"
+                 : iso === selectedIso
+                   ? "selected"
+@@ -224,15 +232,23 @@ export function AgendarClient({ tenant }: AgendarClientProps) {
+           </section>
+         ) : null}
+ 
+-        <Alert
+-          variant="info"
+-          title="Selecciona un día y luego elige un horario disponible."
+-        />
++        {noHours ? (
++          <Alert
++            variant="warning"
++            title="El consultorio aún no tiene horarios disponibles"
++            description="Vuelve más tarde o contacta al consultorio."
++          />
++        ) : (
++          <Alert
++            variant="info"
++            title="Selecciona un día y luego elige un horario disponible."
++          />
++        )}
+ 
+         <Button
+-          variant={selectedIso ? "primary" : "disabled"}
++          variant={canContinue ? "primary" : "disabled"}
+           href={
+-            selectedIso
++            canContinue && selectedIso
+               ? `/${tenant.slug}/agendar/horario?date=${selectedIso}`
+               : undefined
+           }
+diff --git a/src/app/[tenant]/agendar/horario/HorarioClient.tsx b/src/app/[tenant]/agendar/horario/HorarioClient.tsx
+index 7c792a9..cf2c6f0 100644
+--- a/src/app/[tenant]/agendar/horario/HorarioClient.tsx
++++ b/src/app/[tenant]/agendar/horario/HorarioClient.tsx
+@@ -27,11 +27,11 @@ import {
+   zonedDateTimeToUtc,
+ } from "@/lib/clinic-time";
+ import {
+-  AFTERNOON_SLOTS,
+-  ALL_SLOTS,
+-  MORNING_SLOTS,
+-  isSlotPast,
+-} from "@/lib/slots";
++  getSlotsForDate,
++  splitByPeriod,
++  type AvailabilityRule,
++} from "@/lib/availability";
++import { isSlotPast } from "@/lib/slots";
+ import { createClient } from "@/lib/supabase/client";
+ import type { Tenant } from "@/lib/tenant";
+ 
+@@ -74,7 +74,12 @@ function SlotGroup({ id, label, icon, children }: SlotGroupProps) {
+   );
+ }
+ 
+-export function HorarioClient({ tenant }: { tenant: Tenant }) {
++type HorarioClientProps = {
++  tenant: Tenant;
++  rules: AvailabilityRule[];
++};
++
++export function HorarioClient({ tenant, rules }: HorarioClientProps) {
+   const router = useRouter();
+   const searchParams = useSearchParams();
+ 
+@@ -152,12 +157,15 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
+ 
+   if (!date || loadingSlots) return <HorarioSkeleton slug={tenant.slug} />;
+ 
++  const slots = getSlotsForDate(rules, date);
++  const { morning, afternoon } = splitByPeriod(slots);
++
+   const isUnavailable = (time: string) =>
+     busySlots.has(time) || isSlotPast(date, time, nowMs);
+ 
+   const activeSlot =
+     selectedSlot &&
+-    ALL_SLOTS.includes(selectedSlot) &&
++    slots.includes(selectedSlot) &&
+     !isUnavailable(selectedSlot)
+       ? selectedSlot
+       : null;
+@@ -264,29 +272,39 @@ export function HorarioClient({ tenant }: { tenant: Tenant }) {
+               Reintentar
+             </Button>
+           </div>
++        ) : slots.length === 0 ? (
++          <Alert
++            variant="info"
++            title="Este día no hay atención"
++            description="Elige otra fecha."
++          />
+         ) : (
+           <>
+-            <SlotGroup
+-              id="franja-manana"
+-              label="Mañana"
+-              icon={<Sun size={16} aria-hidden="true" />}
+-            >
+-              {MORNING_SLOTS.map(renderSlot)}
+-            </SlotGroup>
+-
+-            <SlotGroup
+-              id="franja-tarde"
+-              label="Tarde"
+-              icon={<Sunset size={16} aria-hidden="true" />}
+-            >
+-              {AFTERNOON_SLOTS.map(renderSlot)}
+-            </SlotGroup>
++            {morning.length > 0 ? (
++              <SlotGroup
++                id="franja-manana"
++                label="Mañana"
++                icon={<Sun size={16} aria-hidden="true" />}
++              >
++                {morning.map(renderSlot)}
++              </SlotGroup>
++            ) : null}
++
++            {afternoon.length > 0 ? (
++              <SlotGroup
++                id="franja-tarde"
++                label="Tarde"
++                icon={<Sunset size={16} aria-hidden="true" />}
++              >
++                {afternoon.map(renderSlot)}
++              </SlotGroup>
++            ) : null}
+           </>
+         )}
+ 
+         <div className="mt-auto flex flex-col gap-ds-3">
+           <p className="text-center text-14 text-text-muted">
+-            Toca un horario para continuar. Verificarás tu correo al confirmar.
++            Toca un horario para continuar.
+           </p>
+           <Button
+             variant={activeSlot ? "primary" : "disabled"}
+diff --git a/src/app/[tenant]/agendar/horario/page.tsx b/src/app/[tenant]/agendar/horario/page.tsx
+index abc5b17..e204e8f 100644
+--- a/src/app/[tenant]/agendar/horario/page.tsx
++++ b/src/app/[tenant]/agendar/horario/page.tsx
+@@ -1,5 +1,6 @@
+ import { Suspense } from "react";
+ import { notFound, redirect } from "next/navigation";
++import { getAvailabilityRules } from "@/lib/availability-data";
+ import { getTenantBySlug } from "@/lib/tenant";
+ import { HorarioClient, HorarioSkeleton } from "./HorarioClient";
+ 
+@@ -15,9 +16,11 @@ export default async function HorarioPage({ params }: PageProps) {
+     redirect(`/${tenant.slug}/home`);
+   }
+ 
++  const rules = await getAvailabilityRules(tenant.id);
++
+   return (
+     <Suspense fallback={<HorarioSkeleton slug={tenant.slug} />}>
+-      <HorarioClient tenant={tenant} />
++      <HorarioClient tenant={tenant} rules={rules} />
+     </Suspense>
+   );
+ }
+\ No newline at end of file
+diff --git a/src/app/[tenant]/agendar/page.tsx b/src/app/[tenant]/agendar/page.tsx
+index bae7086..567915f 100644
+--- a/src/app/[tenant]/agendar/page.tsx
++++ b/src/app/[tenant]/agendar/page.tsx
+@@ -1,4 +1,5 @@
+ import { notFound, redirect } from "next/navigation";
++import { getAvailabilityRules } from "@/lib/availability-data";
+ import { getTenantBySlug } from "@/lib/tenant";
+ import { AgendarClient } from "./AgendarClient";
+ 
+@@ -14,5 +15,7 @@ export default async function AgendarPage({ params }: PageProps) {
+     redirect(`/${tenant.slug}/home`);
+   }
+ 
+-  return <AgendarClient tenant={tenant} />;
++  const rules = await getAvailabilityRules(tenant.id);
++
++  return <AgendarClient tenant={tenant} rules={rules} />;
+ }
+\ No newline at end of file
+diff --git a/src/app/[tenant]/agendar/resumen/ResumenClient.tsx b/src/app/[tenant]/agendar/resumen/ResumenClient.tsx
+index c80e129..03b1c71 100644
+--- a/src/app/[tenant]/agendar/resumen/ResumenClient.tsx
++++ b/src/app/[tenant]/agendar/resumen/ResumenClient.tsx
+@@ -136,6 +136,9 @@ export function ResumenClient({ tenant }: ResumenClientProps) {
+ 
+       if (message.includes("agenda_closed")) {
+         setError("El consultorio cerró su agenda por ahora. Intenta más tarde.");
++      } else if (message.includes("outside_hours")) {
++        setError("Ese horario está fuera del horario de atención. Elige otro.");
++        setSlotTaken(true);
+       } else if (message.includes("invalid_start")) {
+         setError("Ese horario ya pasó. Elige otro.");
+         setSlotTaken(true);
+diff --git a/src/app/doctor/(panel)/disponibilidad/BlocksManager.tsx b/src/app/doctor/(panel)/disponibilidad/BlocksManager.tsx
+new file mode 100644
+index 0000000..fffa865
+--- /dev/null
++++ b/src/app/doctor/(panel)/disponibilidad/BlocksManager.tsx
+@@ -0,0 +1,235 @@
++"use client";
++
++import { useState } from "react";
++import { useRouter } from "next/navigation";
++import { CalendarOff, CircleCheck, Trash2 } from "lucide-react";
++import { Alert } from "@/components/ui/Alert";
++import { Button } from "@/components/ui/Button";
++import { DateTimeInput } from "@/components/ui/DateTimeInput";
++import { Input } from "@/components/ui/Input";
++import { getClinicDateIso, getClinicTime } from "@/lib/clinic-time";
++import { formatLongDate, formatTimeLabel } from "@/lib/format-date";
++import { createBlock, deleteBlock } from "./actions";
++
++export type BlockRow = {
++  id: string;
++  starts_at: string;
++  ends_at: string;
++  reason: string | null;
++};
++
++type Mode = "dias" | "horas";
++
++function describeBlock(block: BlockRow) {
++  const startDate = getClinicDateIso(block.starts_at);
++  const startTime = getClinicTime(block.starts_at);
++  const endTime = getClinicTime(block.ends_at);
++
++  if (startTime === "00:00" && endTime === "00:00") {
++    const lastDate = getClinicDateIso(new Date(new Date(block.ends_at).getTime() - 1));
++
++    return lastDate === startDate
++      ? `${formatLongDate(startDate)} · todo el día`
++      : `Del ${formatLongDate(startDate)} al ${formatLongDate(lastDate)}`;
++  }
++
++  return `${formatLongDate(startDate)} · ${formatTimeLabel(startTime)} a ${formatTimeLabel(endTime)}`;
++}
++
++type BlocksManagerProps = {
++  blocks: BlockRow[];
++  todayIso: string;
++};
++
++export function BlocksManager({ blocks, todayIso }: BlocksManagerProps) {
++  const router = useRouter();
++
++  const [mode, setMode] = useState<Mode>("dias");
++  const [startDate, setStartDate] = useState(todayIso);
++  const [endDate, setEndDate] = useState(todayIso);
++  const [startTime, setStartTime] = useState("09:00");
++  const [endTime, setEndTime] = useState("10:00");
++  const [reason, setReason] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | undefined>(undefined);
++  const [notice, setNotice] = useState<string | undefined>(undefined);
++
++  async function handleCreate() {
++    if (busy) return;
++
++    setBusy(true);
++    setError(undefined);
++    setNotice(undefined);
++
++    const result = await createBlock({
++      allDay: mode === "dias",
++      startDate,
++      endDate: mode === "dias" ? endDate : startDate,
++      startTime,
++      endTime,
++      reason,
++    });
++
++    setBusy(false);
++
++    if (!result.ok) {
++      setError(result.error);
++      return;
++    }
++
++    setReason("");
++    setNotice("Bloqueo creado. Esos horarios ya no se pueden reservar.");
++    router.refresh();
++  }
++
++  async function handleDelete(block: BlockRow) {
++    if (busy) return;
++
++    if (!window.confirm("¿Quitar este bloqueo? Los horarios volverán a estar disponibles.")) {
++      return;
++    }
++
++    setBusy(true);
++    setError(undefined);
++    setNotice(undefined);
++
++    const result = await deleteBlock(block.id);
++
++    setBusy(false);
++
++    if (!result.ok) {
++      setError(result.error);
++      return;
++    }
++
++    setNotice("Bloqueo eliminado.");
++    router.refresh();
++  }
++
++  return (
++    <div className="flex flex-col gap-ds-4">
++      {notice ? (
++        <Alert variant="info" icon={CircleCheck} title={notice} />
++      ) : null}
++      {error ? <Alert variant="danger" title={error} /> : null}
++
++      <div className="flex flex-col gap-ds-4 rounded-md border border-border bg-surface p-ds-4">
++        <div
++          role="radiogroup"
++          aria-label="Tipo de bloqueo"
++          className="flex flex-wrap gap-ds-2"
++        >
++          {(
++            [
++              { value: "dias", label: "Día o varios días" },
++              { value: "horas", label: "Rango de horas" },
++            ] as const
++          ).map((option) => {
++            const active = mode === option.value;
++
++            return (
++              <button
++                key={option.value}
++                type="button"
++                role="radio"
++                aria-checked={active}
++                onClick={() => setMode(option.value)}
++                className={`flex min-h-[44px] items-center rounded-sm px-ds-4 text-16 ${
++                  active
++                    ? "bg-surface-soft font-bold text-primary"
++                    : "text-text-muted hover:bg-surface-soft"
++                }`}
++              >
++                {option.label}
++              </button>
++            );
++          })}
++        </div>
++
++        <div className="flex flex-wrap items-end gap-ds-3">
++          <DateTimeInput
++            type="date"
++            label={mode === "dias" ? "Desde" : "Fecha"}
++            min={todayIso}
++            value={startDate}
++            onChange={(value) => {
++              setStartDate(value);
++              if (endDate < value) setEndDate(value);
++            }}
++          />
++          {mode === "dias" ? (
++            <DateTimeInput
++              type="date"
++              label="Hasta"
++              min={startDate}
++              value={endDate}
++              onChange={setEndDate}
++            />
++          ) : (
++            <>
++              <DateTimeInput
++                type="time"
++                label="De"
++                step={30 * 60}
++                value={startTime}
++                onChange={setStartTime}
++              />
++              <DateTimeInput
++                type="time"
++                label="A"
++                step={30 * 60}
++                value={endTime}
++                onChange={setEndTime}
++              />
++            </>
++          )}
++        </div>
++
++        <Input
++          label="Motivo (opcional, solo lo ves tú)"
++          placeholder="Ej. Vacaciones, congreso, cita personal"
++          value={reason}
++          onChange={setReason}
++        />
++
++        <Button
++          variant={busy ? "disabled" : "primary"}
++          icon={<CalendarOff size={20} aria-hidden="true" />}
++          onClick={handleCreate}
++          className="w-full lg:w-auto lg:self-start"
++        >
++          {busy ? "Guardando…" : "Bloquear"}
++        </Button>
++      </div>
++
++      {blocks.length === 0 ? (
++        <p className="text-14 text-text-muted">No tienes bloqueos próximos.</p>
++      ) : (
++        <ul className="flex flex-col gap-ds-2">
++          {blocks.map((block) => (
++            <li
++              key={block.id}
++              className="flex items-center gap-ds-3 rounded-md border border-border bg-surface p-ds-4"
++            >
++              <div className="flex min-w-0 flex-1 flex-col gap-ds-1">
++                <p className="text-16 font-bold text-text">{describeBlock(block)}</p>
++                {block.reason ? (
++                  <p className="truncate text-14 text-text-muted">{block.reason}</p>
++                ) : null}
++              </div>
++              <button
++                type="button"
++                onClick={() => handleDelete(block)}
++                disabled={busy}
++                aria-label={`Quitar bloqueo: ${describeBlock(block)}`}
++                className="flex size-[44px] shrink-0 items-center justify-center rounded-sm text-danger hover:bg-surface-soft"
++              >
++                <Trash2 size={20} aria-hidden="true" />
++              </button>
++            </li>
++          ))}
++        </ul>
++      )}
++    </div>
++  );
++}
+diff --git a/src/app/doctor/(panel)/disponibilidad/ScheduleEditor.tsx b/src/app/doctor/(panel)/disponibilidad/ScheduleEditor.tsx
+new file mode 100644
+index 0000000..ca5fd96
+--- /dev/null
++++ b/src/app/doctor/(panel)/disponibilidad/ScheduleEditor.tsx
+@@ -0,0 +1,234 @@
++"use client";
++
++import { useState } from "react";
++import { useRouter } from "next/navigation";
++import { CircleCheck, Plus, Save, X } from "lucide-react";
++import { Alert } from "@/components/ui/Alert";
++import { Button } from "@/components/ui/Button";
++import { DateTimeInput } from "@/components/ui/DateTimeInput";
++import {
++  validateWindows,
++  type AvailabilityRule,
++  type TimeWindow,
++} from "@/lib/availability";
++import { saveSchedule } from "./actions";
++
++type DayState = { open: boolean; windows: TimeWindow[] };
++
++const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
++const DAY_LABELS = [
++  "Domingo",
++  "Lunes",
++  "Martes",
++  "Miércoles",
++  "Jueves",
++  "Viernes",
++  "Sábado",
++];
++const MAX_WINDOWS = 3;
++const SLOT_STEP_SECONDS = 30 * 60;
++
++function buildInitial(rules: AvailabilityRule[]): DayState[] {
++  return Array.from({ length: 7 }, (_, weekday) => {
++    const windows = rules
++      .filter((rule) => rule.weekday === weekday)
++      .map((rule) => ({ start: rule.start, end: rule.end }))
++      .sort((a, b) => a.start.localeCompare(b.start));
++
++    return {
++      open: windows.length > 0,
++      windows: windows.length > 0 ? windows : [{ start: "09:00", end: "12:00" }],
++    };
++  });
++}
++
++type ScheduleEditorProps = {
++  initialRules: AvailabilityRule[];
++};
++
++export function ScheduleEditor({ initialRules }: ScheduleEditorProps) {
++  const router = useRouter();
++
++  const [days, setDays] = useState<DayState[]>(() => buildInitial(initialRules));
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState<string | undefined>(undefined);
++  const [saved, setSaved] = useState(false);
++
++  const issues = days.map((day) => (day.open ? validateWindows(day.windows) : null));
++  const hasIssues = issues.some(Boolean);
++  const hasOpenDay = days.some((day) => day.open);
++
++  function updateDay(weekday: number, change: (day: DayState) => DayState) {
++    setDays((current) =>
++      current.map((day, index) => (index === weekday ? change(day) : day)),
++    );
++    setSaved(false);
++    setError(undefined);
++  }
++
++  async function handleSave() {
++    if (saving || hasIssues) return;
++
++    setSaving(true);
++    setError(undefined);
++    setSaved(false);
++
++    const rules: AvailabilityRule[] = days.flatMap((day, weekday) =>
++      day.open
++        ? day.windows.map((window) => ({
++            weekday,
++            start: window.start,
++            end: window.end,
++          }))
++        : [],
++    );
++
++    const result = await saveSchedule(rules);
++
++    setSaving(false);
++
++    if (!result.ok) {
++      setError(result.error);
++      return;
++    }
++
++    setSaved(true);
++    router.refresh();
++  }
++
++  return (
++    <div className="flex flex-col gap-ds-4">
++      {saved ? (
++        <Alert
++          variant="info"
++          icon={CircleCheck}
++          title="Horario guardado"
++          description="Tus pacientes ya ven los nuevos horarios."
++        />
++      ) : null}
++      {error ? <Alert variant="danger" title={error} /> : null}
++      {!hasOpenDay ? (
++        <Alert
++          variant="warning"
++          title="No hay ningún día abierto"
++          description="Mientras tanto, los pacientes no podrán agendar."
++        />
++      ) : null}
++
++      <ul className="flex flex-col gap-ds-3">
++        {DAY_ORDER.map((weekday) => {
++          const day = days[weekday];
++          const label = DAY_LABELS[weekday];
++          const issue = issues[weekday];
++
++          return (
++            <li
++              key={weekday}
++              className="flex flex-col gap-ds-3 rounded-md border border-border bg-surface p-ds-4"
++            >
++              <label className="flex min-h-[44px] items-center gap-ds-3 text-16 font-bold text-text">
++                <input
++                  type="checkbox"
++                  checked={day.open}
++                  onChange={(event) =>
++                    updateDay(weekday, (current) => ({
++                      ...current,
++                      open: event.target.checked,
++                    }))
++                  }
++                  className="size-[24px] accent-primary"
++                />
++                {label}
++              </label>
++
++              {day.open ? (
++                <div className="flex flex-col gap-ds-3">
++                  {day.windows.map((window, index) => (
++                    <div key={index} className="flex flex-wrap items-end gap-ds-3">
++                      <DateTimeInput
++                        type="time"
++                        step={SLOT_STEP_SECONDS}
++                        label={`Desde (${label}, horario ${index + 1})`}
++                        value={window.start}
++                        onChange={(value) =>
++                          updateDay(weekday, (current) => ({
++                            ...current,
++                            windows: current.windows.map((item, i) =>
++                              i === index ? { ...item, start: value } : item,
++                            ),
++                          }))
++                        }
++                      />
++                      <DateTimeInput
++                        type="time"
++                        step={SLOT_STEP_SECONDS}
++                        label={`Hasta (${label}, horario ${index + 1})`}
++                        value={window.end}
++                        onChange={(value) =>
++                          updateDay(weekday, (current) => ({
++                            ...current,
++                            windows: current.windows.map((item, i) =>
++                              i === index ? { ...item, end: value } : item,
++                            ),
++                          }))
++                        }
++                      />
++                      {day.windows.length > 1 ? (
++                        <button
++                          type="button"
++                          aria-label={`Quitar horario ${index + 1} de ${label}`}
++                          onClick={() =>
++                            updateDay(weekday, (current) => ({
++                              ...current,
++                              windows: current.windows.filter((_, i) => i !== index),
++                            }))
++                          }
++                          className="flex size-[56px] items-center justify-center rounded-sm text-text-muted hover:bg-surface-soft"
++                        >
++                          <X size={20} aria-hidden="true" />
++                        </button>
++                      ) : null}
++                    </div>
++                  ))}
++
++                  {issue ? (
++                    <p role="alert" className="text-14 text-danger">
++                      {issue}
++                    </p>
++                  ) : null}
++
++                  {day.windows.length < MAX_WINDOWS ? (
++                    <button
++                      type="button"
++                      onClick={() =>
++                        updateDay(weekday, (current) => ({
++                          ...current,
++                          windows: [...current.windows, { start: "16:00", end: "17:00" }],
++                        }))
++                      }
++                      className="flex min-h-[44px] items-center gap-ds-2 self-start text-14 font-bold text-primary"
++                    >
++                      <Plus size={16} aria-hidden="true" />
++                      Agregar horario
++                    </button>
++                  ) : null}
++                </div>
++              ) : (
++                <p className="text-14 text-text-muted">Cerrado</p>
++              )}
++            </li>
++          );
++        })}
++      </ul>
++
++      <Button
++        variant={saving || hasIssues ? "disabled" : "primary"}
++        icon={<Save size={20} aria-hidden="true" />}
++        onClick={handleSave}
++        className="w-full lg:w-auto"
++      >
++        {saving ? "Guardando…" : "Guardar horario"}
++      </Button>
++    </div>
++  );
++}
+diff --git a/src/app/doctor/(panel)/disponibilidad/actions.ts b/src/app/doctor/(panel)/disponibilidad/actions.ts
+new file mode 100644
+index 0000000..85ed4cf
+--- /dev/null
++++ b/src/app/doctor/(panel)/disponibilidad/actions.ts
+@@ -0,0 +1,200 @@
++"use server";
++
++import { getNowMs, zonedDateTimeToUtc } from "@/lib/clinic-time";
++import {
++  isValidClockTime,
++  validateWindows,
++  type AvailabilityRule,
++} from "@/lib/availability";
++import { isValidIsoDate, parseIsoDate, toIsoDate } from "@/lib/format-date";
++import { createClient } from "@/lib/supabase/server";
++
++export type ActionResult = { ok: true } | { ok: false; error: string };
++
++const UUID_REGEX =
++  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++const MAX_WINDOWS_PER_DAY = 3;
++const MAX_BLOCK_DAYS = 366;
++const MAX_REASON_LENGTH = 120;
++const DAY_MS = 24 * 60 * 60 * 1000;
++
++async function getContext() {
++  const supabase = await createClient();
++
++  const {
++    data: { user },
++  } = await supabase.auth.getUser();
++
++  if (!user) return null;
++
++  const { data: profile } = await supabase
++    .from("doctor_profiles")
++    .select("tenant_id")
++    .eq("user_id", user.id)
++    .maybeSingle<{ tenant_id: string }>();
++
++  if (!profile) return null;
++
++  return { supabase, tenantId: profile.tenant_id };
++}
++
++const NO_ACCESS: ActionResult = {
++  ok: false,
++  error: "Tu sesión expiró o no tienes acceso. Inicia sesión de nuevo.",
++};
++
++function addDaysIso(isoDate: string, amount: number) {
++  const next = parseIsoDate(isoDate);
++  next.setDate(next.getDate() + amount);
++  return toIsoDate(next);
++}
++
++export async function saveSchedule(
++  rules: AvailabilityRule[],
++): Promise<ActionResult> {
++  if (!Array.isArray(rules)) return { ok: false, error: "Horario inválido." };
++
++  for (let weekday = 0; weekday <= 6; weekday += 1) {
++    const windows = rules.filter((rule) => rule.weekday === weekday);
++
++    if (windows.length > MAX_WINDOWS_PER_DAY) {
++      return { ok: false, error: "Máximo 3 horarios por día." };
++    }
++
++    const issue = validateWindows(windows);
++    if (issue) return { ok: false, error: issue };
++  }
++
++  if (
++    rules.some(
++      (rule) =>
++        !Number.isInteger(rule.weekday) || rule.weekday < 0 || rule.weekday > 6,
++    )
++  ) {
++    return { ok: false, error: "Horario inválido." };
++  }
++
++  const context = await getContext();
++  if (!context) return NO_ACCESS;
++
++  const { error } = await context.supabase.rpc("save_availability_rules", {
++    p_tenant: context.tenantId,
++    p_rules: rules.map((rule) => ({
++      weekday: rule.weekday,
++      start: rule.start,
++      end: rule.end,
++    })),
++  });
++
++  if (error) {
++    return { ok: false, error: "No pudimos guardar el horario. Inténtalo de nuevo." };
++  }
++
++  return { ok: true };
++}
++
++export type BlockInput = {
++  allDay: boolean;
++  startDate: string;
++  endDate: string;
++  startTime: string;
++  endTime: string;
++  reason: string;
++};
++
++export async function createBlock(input: BlockInput): Promise<ActionResult> {
++  if (!isValidIsoDate(input.startDate)) {
++    return { ok: false, error: "Elige una fecha válida." };
++  }
++
++  const reason = (input.reason ?? "").trim().slice(0, MAX_REASON_LENGTH);
++
++  let startsAt: Date;
++  let endsAt: Date;
++
++  if (input.allDay) {
++    if (!isValidIsoDate(input.endDate) || input.endDate < input.startDate) {
++      return { ok: false, error: "La fecha final no puede ser anterior a la inicial." };
++    }
++
++    const days =
++      (parseIsoDate(input.endDate).getTime() -
++        parseIsoDate(input.startDate).getTime()) /
++        DAY_MS +
++      1;
++    if (days > MAX_BLOCK_DAYS) {
++      return { ok: false, error: "Puedes bloquear hasta 1 año de una vez." };
++    }
++
++    startsAt = zonedDateTimeToUtc(input.startDate, "00:00:00");
++    endsAt = zonedDateTimeToUtc(addDaysIso(input.endDate, 1), "00:00:00");
++  } else {
++    if (!isValidClockTime(input.startTime) || !isValidClockTime(input.endTime)) {
++      return { ok: false, error: "Ingresa horas válidas." };
++    }
++    if (input.endTime <= input.startTime) {
++      return { ok: false, error: "La hora final debe ser posterior a la inicial." };
++    }
++
++    startsAt = zonedDateTimeToUtc(input.startDate, input.startTime);
++    endsAt = zonedDateTimeToUtc(input.startDate, input.endTime);
++  }
++
++  if (endsAt.getTime() <= getNowMs()) {
++    return { ok: false, error: "No puedes bloquear un periodo que ya pasó." };
++  }
++
++  const context = await getContext();
++  if (!context) return NO_ACCESS;
++
++  const { count, error: countError } = await context.supabase
++    .from("appointments")
++    .select("id", { count: "exact", head: true })
++    .eq("tenant_id", context.tenantId)
++    .eq("status", "confirmed")
++    .lt("starts_at", endsAt.toISOString())
++    .gt("ends_at", startsAt.toISOString());
++
++  if (countError) {
++    return { ok: false, error: "No pudimos revisar tus citas. Inténtalo de nuevo." };
++  }
++
++  if (count && count > 0) {
++    return {
++      ok: false,
++      error: `Hay ${count} ${count === 1 ? "cita confirmada" : "citas confirmadas"} en ese periodo. Cancélalas primero en Citas.`,
++    };
++  }
++
++  const { error } = await context.supabase.from("availability_blocks").insert({
++    tenant_id: context.tenantId,
++    starts_at: startsAt.toISOString(),
++    ends_at: endsAt.toISOString(),
++    reason: reason || null,
++  });
++
++  if (error) {
++    return { ok: false, error: "No pudimos crear el bloqueo. Inténtalo de nuevo." };
++  }
++
++  return { ok: true };
++}
++
++export async function deleteBlock(id: string): Promise<ActionResult> {
++  if (!UUID_REGEX.test(id)) return { ok: false, error: "Bloqueo inválido." };
++
++  const context = await getContext();
++  if (!context) return NO_ACCESS;
++
++  const { error, count } = await context.supabase
++    .from("availability_blocks")
++    .delete({ count: "exact" })
++    .eq("id", id)
++    .eq("tenant_id", context.tenantId);
++
++  if (error || !count) {
++    return { ok: false, error: "No pudimos quitar el bloqueo. Inténtalo de nuevo." };
++  }
++
++  return { ok: true };
++}
+diff --git a/src/app/doctor/(panel)/disponibilidad/page.tsx b/src/app/doctor/(panel)/disponibilidad/page.tsx
+index e69de29..06255e2 100644
+--- a/src/app/doctor/(panel)/disponibilidad/page.tsx
++++ b/src/app/doctor/(panel)/disponibilidad/page.tsx
+@@ -0,0 +1,87 @@
++import { redirect } from "next/navigation";
++import { connection } from "next/server";
++import { Alert } from "@/components/ui/Alert";
++import { PageHeader } from "@/components/ui/PageHeader";
++import { getAvailabilityRules } from "@/lib/availability-data";
++import { getClinicTodayIso, getNowMs } from "@/lib/clinic-time";
++import { createClient } from "@/lib/supabase/server";
++import { BlocksManager } from "./BlocksManager";
++import type { BlockRow } from "./BlocksManager";
++import { ScheduleEditor } from "./ScheduleEditor";
++
++const MAX_BLOCKS = 100;
++
++export default async function DisponibilidadPage() {
++  await connection();
++
++  const supabase = await createClient();
++
++  const {
++    data: { user },
++  } = await supabase.auth.getUser();
++
++  if (!user) redirect("/doctor/login");
++
++  const { data: profile } = await supabase
++    .from("doctor_profiles")
++    .select("tenant_id")
++    .eq("user_id", user.id)
++    .maybeSingle<{ tenant_id: string }>();
++
++  if (!profile) redirect("/doctor/login?error=sin-acceso");
++
++  const rules = await getAvailabilityRules(profile.tenant_id);
++
++  const { data: blocksData, error: blocksError } = await supabase
++    .from("availability_blocks")
++    .select("id, starts_at, ends_at, reason")
++    .eq("tenant_id", profile.tenant_id)
++    .gte("ends_at", new Date(getNowMs()).toISOString())
++    .order("starts_at", { ascending: true })
++    .limit(MAX_BLOCKS);
++
++  return (
++    <div className="flex flex-col gap-ds-8">
++      <PageHeader
++        title="Disponibilidad"
++        subtitle="Define tus horarios de atención y bloquea fechas u horas."
++      />
++
++      <section aria-labelledby="horario-semanal" className="flex flex-col gap-ds-4">
++        <div className="flex flex-col gap-ds-1">
++          <h2 id="horario-semanal" className="text-20 font-bold text-text">
++            Horario semanal
++          </h2>
++          <p className="text-14 text-text-muted">
++            Los pacientes reservan citas de 30 minutos dentro de estas horas.
++          </p>
++        </div>
++        <ScheduleEditor initialRules={rules} />
++      </section>
++
++      <section aria-labelledby="bloqueos" className="flex flex-col gap-ds-4">
++        <div className="flex flex-col gap-ds-1">
++          <h2 id="bloqueos" className="text-20 font-bold text-text">
++            Bloqueos
++          </h2>
++          <p className="text-14 text-text-muted">
++            Vacaciones, congresos o ratos en los que no atiendes.
++          </p>
++        </div>
++
++        {blocksError ? (
++          <Alert
++            variant="danger"
++            title="No pudimos cargar tus bloqueos"
++            description="Recarga la página e inténtalo de nuevo."
++          />
++        ) : (
++          <BlocksManager
++            blocks={(blocksData ?? []) as BlockRow[]}
++            todayIso={getClinicTodayIso()}
++          />
++        )}
++      </section>
++    </div>
++  );
++}
+diff --git a/src/components/ui/DateTimeInput.tsx b/src/components/ui/DateTimeInput.tsx
+new file mode 100644
+index 0000000..20fcadc
+--- /dev/null
++++ b/src/components/ui/DateTimeInput.tsx
+@@ -0,0 +1,60 @@
++"use client";
++
++import { useId } from "react";
++
++type DateTimeInputProps = {
++  label: string;
++  type: "date" | "time";
++  value: string;
++  onChange: (value: string) => void;
++  min?: string;
++  step?: number;
++  error?: string;
++  hint?: string;
++};
++
++export function DateTimeInput({
++  label,
++  type,
++  value,
++  onChange,
++  min,
++  step,
++  error,
++  hint,
++}: DateTimeInputProps) {
++  const id = useId();
++  const messageId = `${id}-message`;
++
++  return (
++    <div className="flex flex-col gap-ds-2">
++      <label htmlFor={id} className="text-14 font-bold text-text">
++        {label}
++      </label>
++      <input
++        id={id}
++        type={type}
++        value={value}
++        min={min}
++        step={step}
++        onChange={(event) => onChange(event.target.value)}
++        aria-invalid={error ? true : undefined}
++        aria-describedby={error || hint ? messageId : undefined}
++        className={`h-control rounded-sm border bg-surface px-ds-4 text-16 text-text focus:outline-none focus:ring-2 ${
++          error
++            ? "border-danger focus:border-danger focus:ring-danger/20"
++            : "border-border focus:border-primary focus:ring-primary/20"
++        }`}
++      />
++      {error ? (
++        <p id={messageId} role="alert" className="text-14 text-danger">
++          {error}
++        </p>
++      ) : hint ? (
++        <p id={messageId} className="text-14 text-text-muted">
++          {hint}
++        </p>
++      ) : null}
++    </div>
++  );
++}
+diff --git a/src/lib/availability-data.ts b/src/lib/availability-data.ts
+new file mode 100644
+index 0000000..9df65c5
+--- /dev/null
++++ b/src/lib/availability-data.ts
+@@ -0,0 +1,27 @@
++import { cache } from "react";
++import type { AvailabilityRule } from "@/lib/availability";
++import { createClient } from "@/lib/supabase/server";
++
++type RuleRow = { weekday: number; start_time: string; end_time: string };
++
++/** Horario semanal del consultorio (solo servidor). */
++export const getAvailabilityRules = cache(
++  async (tenantId: string): Promise<AvailabilityRule[]> => {
++    const supabase = await createClient();
++
++    const { data, error } = await supabase
++      .from("availability_rules")
++      .select("weekday, start_time, end_time")
++      .eq("tenant_id", tenantId)
++      .order("weekday")
++      .order("start_time");
++
++    if (error || !data) return [];
++
++    return (data as RuleRow[]).map((row) => ({
++      weekday: row.weekday,
++      start: row.start_time.slice(0, 5),
++      end: row.end_time.slice(0, 5),
++    }));
++  },
++);
+diff --git a/src/lib/availability.ts b/src/lib/availability.ts
+new file mode 100644
+index 0000000..233a95b
+--- /dev/null
++++ b/src/lib/availability.ts
+@@ -0,0 +1,86 @@
++import { SLOT_MINUTES } from "@/lib/booking";
++import { parseIsoDate } from "@/lib/format-date";
++
++/** Ventana de atención semanal. weekday: 0 = domingo … 6 = sábado. Horas "HH:MM". */
++export type AvailabilityRule = {
++  weekday: number;
++  start: string;
++  end: string;
++};
++
++export type TimeWindow = { start: string; end: string };
++
++const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
++const NOON = "12:00";
++
++export function isValidClockTime(value: string) {
++  return TIME_REGEX.test(value);
++}
++
++export function toMinutes(time: string) {
++  const [hours, minutes] = time.split(":").map(Number);
++  return hours * 60 + minutes;
++}
++
++function fromMinutes(total: number) {
++  const hours = String(Math.floor(total / 60)).padStart(2, "0");
++  const minutes = String(total % 60).padStart(2, "0");
++  return `${hours}:${minutes}`;
++}
++
++/** Slots de 30 min que caben en las ventanas de un día de la semana. */
++export function getSlotsForWeekday(rules: AvailabilityRule[], weekday: number) {
++  const slots = new Set<string>();
++
++  for (const rule of rules) {
++    if (rule.weekday !== weekday) continue;
++
++    const end = toMinutes(rule.end);
++    for (let at = toMinutes(rule.start); at + SLOT_MINUTES <= end; at += SLOT_MINUTES) {
++      slots.add(fromMinutes(at));
++    }
++  }
++
++  return [...slots].sort();
++}
++
++export function getSlotsForDate(rules: AvailabilityRule[], isoDate: string) {
++  return getSlotsForWeekday(rules, parseIsoDate(isoDate).getDay());
++}
++
++export function hasHoursOnWeekday(rules: AvailabilityRule[], weekday: number) {
++  return getSlotsForWeekday(rules, weekday).length > 0;
++}
++
++export function splitByPeriod(slots: string[]) {
++  return {
++    morning: slots.filter((time) => time < NOON),
++    afternoon: slots.filter((time) => time >= NOON),
++  };
++}
++
++/** Devuelve un mensaje de error o null si las ventanas son válidas. */
++export function validateWindows(windows: TimeWindow[]): string | null {
++  for (const window of windows) {
++    if (!isValidClockTime(window.start) || !isValidClockTime(window.end)) {
++      return "Ingresa horas válidas.";
++    }
++
++    const start = toMinutes(window.start);
++    const end = toMinutes(window.end);
++
++    if (end <= start) return "La hora final debe ser posterior a la inicial.";
++    if (start % SLOT_MINUTES !== 0 || end % SLOT_MINUTES !== 0) {
++      return "Usa horas en punto o y media (:00 o :30).";
++    }
++  }
++
++  const sorted = [...windows].sort((a, b) => toMinutes(a.start) - toMinutes(b.start));
++  for (let i = 1; i < sorted.length; i += 1) {
++    if (toMinutes(sorted[i].start) < toMinutes(sorted[i - 1].end)) {
++      return "Los horarios no pueden traslaparse.";
++    }
++  }
++
++  return null;
++}
+diff --git a/src/lib/slots.ts b/src/lib/slots.ts
+index e7b2dd5..48c953d 100644
+--- a/src/lib/slots.ts
++++ b/src/lib/slots.ts
+@@ -1,9 +1,5 @@
+ import { zonedDateTimeToUtc } from "@/lib/clinic-time";
+ 
+-export const MORNING_SLOTS = ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"];
+-export const AFTERNOON_SLOTS = ["16:00", "16:30"];
+-export const ALL_SLOTS = [...MORNING_SLOTS, ...AFTERNOON_SLOTS];
+-
+ /** Un slot ya empezó (o empieza ahora) en hora del consultorio. */
+ export function isSlotPast(isoDate: string, time: string, nowMs: number) {
+   return nowMs > 0 && zonedDateTimeToUtc(isoDate, time).getTime() <= nowMs;
+diff --git a/supabase/migrations/20261020_availability.sql b/supabase/migrations/20261020_availability.sql
+new file mode 100644
+index 0000000..9004874
+--- /dev/null
++++ b/supabase/migrations/20261020_availability.sql
+@@ -0,0 +1,176 @@
++-- Disponibilidad configurable: horario semanal + zona horaria por consultorio.
++-- Reemplaza los días y horas fijos que estaban en el código de la app.
++-- EJECUTAR ESTE SQL ANTES de usar la pantalla Disponibilidad y el nuevo flujo del paciente.
++
++-- 1) Zona horaria del consultorio
++alter table public.tenants
++  add column if not exists timezone text not null default 'America/Mazatlan';
++
++-- 2) Horario semanal (weekday: 0 = domingo ... 6 = sábado)
++create table if not exists public.availability_rules (
++  id uuid primary key default gen_random_uuid(),
++  tenant_id uuid not null references public.tenants(id) on delete cascade,
++  weekday smallint not null check (weekday between 0 and 6),
++  start_time time not null,
++  end_time time not null,
++  created_at timestamptz default now(),
++  constraint availability_rules_range check (end_time > start_time)
++);
++
++create index if not exists availability_rules_tenant_idx
++  on public.availability_rules (tenant_id, weekday);
++
++alter table public.availability_rules enable row level security;
++
++-- Los pacientes (incluso sin sesión) necesitan leer el horario para ver el calendario
++drop policy if exists rules_public_read on public.availability_rules;
++create policy rules_public_read on public.availability_rules
++  for select to anon, authenticated
++  using (true);
++
++drop policy if exists rules_doctor_write on public.availability_rules;
++create policy rules_doctor_write on public.availability_rules
++  for all to authenticated
++  using (
++    tenant_id in (select tenant_id from public.doctor_profiles where user_id = auth.uid())
++  )
++  with check (
++    tenant_id in (select tenant_id from public.doctor_profiles where user_id = auth.uid())
++  );
++
++revoke insert, update, delete, truncate, references, trigger
++  on public.availability_rules from anon;
++revoke truncate, references, trigger
++  on public.availability_rules from authenticated;
++
++-- 3) Horario inicial = el que tenía la app fija:
++--    lunes, miércoles, jueves, viernes y sábado, 9:00-12:00 y 16:00-17:00
++insert into public.availability_rules (tenant_id, weekday, start_time, end_time)
++select t.id, d.weekday, w.s, w.e
++from public.tenants t
++cross join (values (1), (3), (4), (5), (6)) as d(weekday)
++cross join (values ('09:00'::time, '12:00'::time), ('16:00'::time, '17:00'::time)) as w(s, e)
++where not exists (
++  select 1 from public.availability_rules r where r.tenant_id = t.id
++);
++
++-- 4) Guardar el horario completo de forma atómica (borra + inserta en una transacción).
++--    SECURITY INVOKER: aplica la RLS del doctor que la llama.
++create or replace function public.save_availability_rules(p_tenant uuid, p_rules jsonb)
++returns void
++language plpgsql
++security invoker
++set search_path = public
++as $$
++begin
++  delete from public.availability_rules where tenant_id = p_tenant;
++
++  insert into public.availability_rules (tenant_id, weekday, start_time, end_time)
++  select
++    p_tenant,
++    (r ->> 'weekday')::smallint,
++    (r ->> 'start')::time,
++    (r ->> 'end')::time
++  from jsonb_array_elements(p_rules) as r;
++end;
++$$;
++
++revoke all on function public.save_availability_rules(uuid, jsonb) from public, anon;
++grant execute on function public.save_availability_rules(uuid, jsonb) to authenticated;
++
++-- 5) Guardia de citas: ahora también exige que la cita caiga dentro del horario
++create or replace function public.appointments_guard()
++returns trigger
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  is_doctor boolean := false;
++  tz text;
++  local_start timestamp;
++  local_end timestamp;
++begin
++  -- Sin sesión de usuario (SQL Editor / service role): sin restricciones.
++  -- Los anónimos no tienen política de INSERT/UPDATE, así que RLS los frena.
++  if auth.uid() is null then
++    return new;
++  end if;
++
++  -- Serializa las reservas de un mismo consultorio
++  perform pg_advisory_xact_lock(hashtextextended(new.tenant_id::text, 0));
++
++  select exists (
++    select 1 from public.doctor_profiles
++    where user_id = auth.uid() and tenant_id = new.tenant_id
++  ) into is_doctor;
++
++  if tg_op = 'INSERT' then
++    if not is_doctor then
++      if exists (
++        select 1 from public.tenants t
++        where t.id = new.tenant_id and t.current_status = 'agenda-cerrada'
++      ) then
++        raise exception 'agenda_closed' using errcode = '23514';
++      end if;
++      if new.status <> 'confirmed' or new.patient_id is distinct from auth.uid() then
++        raise exception 'invalid_booking' using errcode = '23514';
++      end if;
++      if new.ends_at <> new.starts_at + interval '30 minutes' then
++        raise exception 'invalid_duration' using errcode = '23514';
++      end if;
++      if new.starts_at <= now() or new.starts_at > now() + interval '60 days' then
++        raise exception 'invalid_start' using errcode = '23514';
++      end if;
++
++      -- La cita debe caer dentro del horario semanal del consultorio,
++      -- alineada a bloques de 30 min desde el inicio de la ventana.
++      select t.timezone into tz from public.tenants t where t.id = new.tenant_id;
++      local_start := new.starts_at at time zone coalesce(tz, 'America/Mazatlan');
++      local_end := new.ends_at at time zone coalesce(tz, 'America/Mazatlan');
++
++      if local_start::date <> local_end::date or not exists (
++        select 1 from public.availability_rules r
++        where r.tenant_id = new.tenant_id
++          and r.weekday = extract(dow from local_start)::int
++          and local_start::time >= r.start_time
++          and local_end::time <= r.end_time
++          and mod(extract(epoch from (local_start::time - r.start_time))::int, 1800) = 0
++      ) then
++        raise exception 'outside_hours' using errcode = '23514';
++      end if;
++    end if;
++  elsif not is_doctor then
++    -- Los pacientes no modifican citas
++    raise exception 'frozen_fields' using errcode = '23514';
++  end if;
++
++  -- Sin solapamientos con otras citas ni bloqueos
++  if new.status in ('confirmed', 'pending')
++     and (
++       tg_op = 'INSERT'
++       or old.status is distinct from new.status
++       or old.starts_at is distinct from new.starts_at
++       or old.ends_at is distinct from new.ends_at
++     ) then
++    if exists (
++      select 1 from public.appointments a
++      where a.tenant_id = new.tenant_id
++        and a.id <> new.id
++        and (
++          a.status in ('confirmed', 'attended')
++          or (a.status = 'pending' and a.hold_expires_at > now())
++        )
++        and tstzrange(a.starts_at, a.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) or exists (
++      select 1 from public.availability_blocks b
++      where b.tenant_id = new.tenant_id
++        and tstzrange(b.starts_at, b.ends_at) && tstzrange(new.starts_at, new.ends_at)
++    ) then
++      raise exception 'slot_unavailable' using errcode = '23P01';
++    end if;
++  end if;
++
++  return new;
++end;
++$$;
